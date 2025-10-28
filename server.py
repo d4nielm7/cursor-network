@@ -1,27 +1,33 @@
 """
-Simple LinkedIn Network MCP Server
-Connects to Neon Postgres and exposes LinkedIn data to Cursor
-Each user's API key filters to show only their network
+LinkedIn Network MCP Server
+Hosted on Railway - connects to Neon Postgres
+Users only need their API_KEY, DATABASE_URL is configured on Railway
 """
-
+#.venv\Scripts\activate   
 from fastmcp import FastMCP
 import asyncpg
 import os
 import json
 from dotenv import load_dotenv
-import sys
 
-# Load environment variables from .env file (for local development)
-load_dotenv()
+# Load environment variables from .env file (override=False means existing env vars take precedence)
+# This loads DATABASE_URL for local development
+# API_KEY from mcp.json env section takes priority over .env
+load_dotenv(override=False)
 
 # Create MCP server
 mcp = FastMCP("LinkedIn Network")
 
-# Database connection - loaded from environment variables
-# For Railway: Set DATABASE_URL in Railway dashboard
-# For local dev: Set in .env file or mcp.json env section
+# DATABASE_URL: 
+# - Local dev: loaded from .env file
+# - Railway: set in Railway environment variables
 DATABASE_URL = os.getenv("DATABASE_URL")
-# API_KEY comes from mcp.json env section
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL must be set in .env file (local) or Railway environment variables")
+
+# API_KEY: ONLY from mcp.json env section, NEVER from .env file
+# mcp.json sets this when Cursor spawns the process
+# override=False ensures mcp.json's API_KEY is never overwritten by .env
 API_KEY = os.getenv("API_KEY")
 
 db_pool = None
@@ -34,21 +40,12 @@ async def get_db():
     return db_pool
 
 async def get_user_id():
-    """Get user_id from API key - this ensures each user only sees their data"""
+    """API_KEY is the user_id directly"""
     if not API_KEY:
-        raise Exception("API_KEY not set. Please set your API key in Cursor config.")
+        raise Exception("API_KEY not set. Please add your API key to Cursor MCP config.")
     
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        result = await conn.fetchrow(
-            "SELECT user_id FROM users WHERE api_key = $1::uuid",
-            API_KEY
-        )
-        
-        if not result:
-            raise Exception(f"Invalid API key")
-        
-        return result['user_id']
+    # API_KEY is the user_id
+    return API_KEY
 
 
 @mcp.tool()
@@ -63,22 +60,35 @@ async def search_network(query: str, limit: int = 10) -> str:
     Returns:
         JSON string with matching profiles
     """
-    user_id = await get_user_id()  # Gets user_id from their API key
+    user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
         results = await conn.fetch("""
             SELECT 
-                full_name, headline, linkedin_url, email,
-                current_company, current_company_website_url, skills, keywords
+                full_name,
+                email,
+                linkedin_url,
+                headline,
+                about,
+                current_company,
+                current_company_linkedin_url,
+                current_company_website_url,
+                current_company_detail,
+                experiences,
+                skills,
+                education,
+                keywords
             FROM people
             WHERE 
                 user_id = $1
                 AND (
                     full_name ILIKE $2 
                     OR headline ILIKE $2 
+                    OR about ILIKE $2
                     OR current_company ILIKE $2
                     OR keywords::text ILIKE $2
                     OR skills::text ILIKE $2
+                    OR experiences::text ILIKE $2
                 )
             LIMIT $3
         """, user_id, f"%{query}%", limit)
@@ -97,7 +107,7 @@ async def get_profile(name: str) -> str:
     Returns:
         JSON string with full profile data
     """
-    user_id = await get_user_id()  # Gets user_id from their API key
+    user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
         result = await conn.fetchrow("""
@@ -125,7 +135,7 @@ async def filter_by_keywords(keywords: list[str], limit: int = 20) -> str:
     Returns:
         JSON string with matching profiles
     """
-    user_id = await get_user_id()  # Gets user_id from their API key
+    user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
         # Build a query that checks if any keyword appears in the keywords column
@@ -133,8 +143,19 @@ async def filter_by_keywords(keywords: list[str], limit: int = 20) -> str:
         
         results = await conn.fetch(f"""
             SELECT 
-                full_name, headline, linkedin_url,
-                current_company, skills, keywords
+                full_name,
+                email,
+                linkedin_url,
+                headline,
+                about,
+                current_company,
+                current_company_linkedin_url,
+                current_company_website_url,
+                current_company_detail,
+                experiences,
+                skills,
+                education,
+                keywords
             FROM people
             WHERE user_id = $1 AND ({keyword_conditions})
             LIMIT $2
@@ -151,7 +172,7 @@ async def analyze_network() -> str:
     Returns:
         JSON with network stats (total connections, top skills, keywords, companies)
     """
-    user_id = await get_user_id()  # Gets user_id from their API key
+    user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
         # Basic stats
@@ -196,6 +217,6 @@ async def analyze_network() -> str:
         return json.dumps(analysis, indent=2)
 
 
-# This runs the server
+# Railway configuration
 if __name__ == "__main__":
     mcp.run()
