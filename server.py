@@ -217,6 +217,92 @@ async def analyze_network() -> str:
         return json.dumps(analysis, indent=2)
 
 
-# Railway configuration
+@mcp.tool()
+async def export_network_csv() -> str:
+    """
+    Export your entire LinkedIn network to CSV format
+    
+    Returns:
+        CSV string with all your network data (full_name, email, company, skills, etc.)
+    """
+    user_id = await get_user_id()
+    pool = await get_db()
+    
+    async with pool.acquire() as conn:
+        # Get all user's network data
+        results = await conn.fetch("""
+            SELECT 
+                full_name,
+                email,
+                linkedin_url,
+                headline,
+                about,
+                current_company,
+                current_company_linkedin_url,
+                current_company_website_url,
+                current_company_detail,
+                experiences,
+                skills,
+                education,
+                keywords
+            FROM people
+            WHERE user_id = $1
+            ORDER BY full_name
+        """, user_id)
+        
+        if not results:
+            return "No data found in your network."
+        
+        # Generate CSV
+        import csv
+        import io
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow([
+            'Name', 'Email', 'LinkedIn URL', 'Headline', 'About',
+            'Company', 'Company LinkedIn', 'Company Website', 'Company Detail',
+            'Experiences', 'Skills', 'Education', 'Keywords'
+        ])
+        
+        # Write data rows
+        for row in results:
+            writer.writerow([
+                row.get('full_name', ''),
+                row.get('email', ''),
+                row.get('linkedin_url', ''),
+                row.get('headline', ''),
+                row.get('about', ''),
+                row.get('current_company', ''),
+                row.get('current_company_linkedin_url', ''),
+                row.get('current_company_website_url', ''),
+                json.dumps(row.get('current_company_detail')) if row.get('current_company_detail') else '',
+                json.dumps(row.get('experiences')) if row.get('experiences') else '',
+                json.dumps(row.get('skills')) if row.get('skills') else '',
+                json.dumps(row.get('education')) if row.get('education') else '',
+                json.dumps(row.get('keywords')) if row.get('keywords') else ''
+            ])
+        
+        csv_content = output.getvalue()
+        output.close()
+        
+        return f"Your LinkedIn network CSV ({len(results)} contacts):\n\n{csv_content}"
+
+
+# Railway/Deployment configuration
 if __name__ == "__main__":
-    mcp.run()
+    # Railway automatically sets PORT environment variable
+    # If running on Railway, use SSE transport
+    # If running locally, use STDIO transport (for Cursor)
+    
+    port = os.getenv("PORT")
+    if port:
+        # Running on Railway - use SSE transport
+        print(f"🚀 Starting MCP server on port {port} (Railway mode)")
+        mcp.run(transport="sse", port=int(port))
+    else:
+        # Running locally - use STDIO transport (for Cursor)
+        print("🔧 Starting MCP server in STDIO mode (for Cursor)")
+        mcp.run()

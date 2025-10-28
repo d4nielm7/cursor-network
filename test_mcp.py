@@ -62,10 +62,15 @@ async def test_connection():
 
 
 if __name__ == "__main__":
-    # Set API_KEY for testing (in real use, this comes from mcp.json)
+    # API_KEY should come from environment variable or .env file
+    # Never hardcode sensitive data in source files!
     if not os.getenv("API_KEY"):
-        # You can set it here for testing
-        os.environ["API_KEY"] = "039d08d0-962f-45a6-a2a0-fe028c376827"
+        print("❌ API_KEY not set!")
+        print("   Set it as environment variable or add to .env file:")
+        print("   export API_KEY=your-user-id-here")
+        print("\n   Or for testing, run:")
+        print("   API_KEY=your-user-id python test_mcp.py")
+        exit(1)
     
     result = asyncio.run(test_connection())
     exit(0 if result else 1)
