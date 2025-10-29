@@ -11,351 +11,222 @@ import os
 import json
 from dotenv import load_dotenv
 from contextvars import ContextVar
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 import uvicorn
 
 # Load environment variables from .env file (override=False means existing env vars take precedence)
-# This loads DATABASE_URL for local development
-# API_KEY from mcp.json env section takes priority over .env
 load_dotenv(override=False)
 
 # Create MCP server
 mcp = FastMCP("LinkedIn Network")
 
-# Per-request API key storage (safe for async/concurrent usage)
+# Per-request API key storage
 current_api_key: ContextVar[str | None] = ContextVar("current_api_key", default=None)
 
-# DATABASE_URL: 
-# - Local dev: loaded from .env file
-# - Railway: set in Railway environment variables
+# DATABASE_URL
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise Exception("DATABASE_URL must be set in .env file (local) or Railway environment variables")
 
-# API_KEY: 
-# - For STDIO (local): from mcp.json env section
-# - For SSE (Railway): from HTTP headers
-# - NEVER from .env file
-API_KEY = os.getenv("API_KEY")  # Will be set from headers for SSE transport
+# API_KEY (fallback for local/STDIO only)
+API_KEY = os.getenv("API_KEY")
 
 db_pool = None
 
 async def get_db():
-    """Get database connection pool"""
     global db_pool
     if db_pool is None:
         db_pool = await asyncpg.create_pool(DATABASE_URL)
     return db_pool
 
 async def get_user_id():
-    """Get user_id from API_KEY (prefer per-request header; fall back to env)"""
-    # Prefer header captured for this request
     header_key = current_api_key.get()
-    # Fall back to environment/global for local dev or legacy usage
     user_id = header_key or os.getenv("API_KEY") or API_KEY
-    
     if not user_id:
         raise Exception("API_KEY not set. Provide it via 'API_KEY'/'X-API-Key' header or env.")
-    
-    # API_KEY is the user_id
     return user_id
 
-
+# -------------------------------------------------------------------
+# TOOLS
+# -------------------------------------------------------------------
 @mcp.tool()
 async def search_network(query: str, limit: int = 10) -> str:
-    """
-    Search your LinkedIn network by name, job title, company, or skills
-    
-    Args:
-        query: Search query (name, title, company, keyword)
-        limit: Maximum results to return (default: 10)
-    
-    Returns:
-        JSON string with matching profiles
-    """
     user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
-        results = await conn.fetch("""
+        results = await conn.fetch(
+            """
             SELECT 
-                full_name,
-                email,
-                linkedin_url,
-                headline,
-                about,
-                current_company,
-                current_company_linkedin_url,
-                current_company_website_url,
-                current_company_detail,
-                experiences,
-                skills,
-                education,
-                keywords
+                full_name, email, linkedin_url, headline, about,
+                current_company, current_company_linkedin_url,
+                current_company_website_url, current_company_detail,
+                experiences, skills, education, keywords
             FROM people
-            WHERE 
-                user_id = $1
-                AND (
-                    full_name ILIKE $2 
-                    OR headline ILIKE $2 
-                    OR about ILIKE $2
-                    OR current_company ILIKE $2
-                    OR keywords::text ILIKE $2
-                    OR skills::text ILIKE $2
-                    OR experiences::text ILIKE $2
-                )
+            WHERE user_id = $1
+              AND (
+                  full_name ILIKE $2 
+                  OR headline ILIKE $2 
+                  OR about ILIKE $2
+                  OR current_company ILIKE $2
+                  OR keywords::text ILIKE $2
+                  OR skills::text ILIKE $2
+                  OR experiences::text ILIKE $2
+              )
             LIMIT $3
-        """, user_id, f"%{query}%", limit)
-        
+            """,
+            user_id, f"%{query}%", limit
+        )
         return json.dumps([dict(r) for r in results], indent=2, default=str)
-
 
 @mcp.tool()
 async def get_profile(name: str) -> str:
-    """
-    Get detailed profile for a specific person in your network
-    
-    Args:
-        name: Person's full name
-    
-    Returns:
-        JSON string with full profile data
-    """
     user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
-        result = await conn.fetchrow("""
-            SELECT *
-            FROM people
-            WHERE user_id = $1 AND full_name ILIKE $2
-            LIMIT 1
-        """, user_id, f"%{name}%")
-        
+        result = await conn.fetchrow(
+            "SELECT * FROM people WHERE user_id = $1 AND full_name ILIKE $2 LIMIT 1",
+            user_id, f"%{name}%"
+        )
         if result:
             return json.dumps(dict(result), indent=2, default=str)
-        else:
-            return json.dumps({"error": f"No profile found for: {name}"})
-
+        return json.dumps({"error": f"No profile found for: {name}"})
 
 @mcp.tool()
 async def filter_by_keywords(keywords: list[str], limit: int = 20) -> str:
-    """
-    Filter network by targeting keywords (e.g., 'ai', 'founder', 'saas')
-    
-    Args:
-        keywords: List of keywords to match
-        limit: Maximum results (default: 20)
-    
-    Returns:
-        JSON string with matching profiles
-    """
     user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
-        # Build a query that checks if any keyword appears in the keywords column
         keyword_conditions = " OR ".join([f"keywords::text ILIKE '%{kw}%'" for kw in keywords])
-        
         results = await conn.fetch(f"""
             SELECT 
-                full_name,
-                email,
-                linkedin_url,
-                headline,
-                about,
-                current_company,
-                current_company_linkedin_url,
-                current_company_website_url,
-                current_company_detail,
-                experiences,
-                skills,
-                education,
-                keywords
+                full_name, email, linkedin_url, headline, about,
+                current_company, current_company_linkedin_url,
+                current_company_website_url, current_company_detail,
+                experiences, skills, education, keywords
             FROM people
             WHERE user_id = $1 AND ({keyword_conditions})
             LIMIT $2
         """, user_id, limit)
-        
         return json.dumps([dict(r) for r in results], indent=2, default=str)
-
 
 @mcp.tool()
 async def analyze_network() -> str:
-    """
-    Get statistics about your LinkedIn network
-    
-    Returns:
-        JSON with network stats (total connections, top skills, keywords, companies)
-    """
     user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
-        # Basic stats
-        stats = await conn.fetchrow("""
-            SELECT 
-                COUNT(*) as total_connections,
-                COUNT(DISTINCT current_company) as unique_companies
-            FROM people
-            WHERE user_id = $1
-        """, user_id)
-        
-        # Top keywords (extract from JSON/text field)
-        top_keywords = await conn.fetch("""
-            SELECT 
-                unnest(string_to_array(replace(replace(keywords::text, '[', ''), ']', ''), ',')) as keyword,
-                COUNT(*) as count
+        stats = await conn.fetchrow(
+            "SELECT COUNT(*) as total_connections, COUNT(DISTINCT current_company) as unique_companies FROM people WHERE user_id = $1",
+            user_id
+        )
+        top_keywords = await conn.fetch(
+            """
+            SELECT unnest(string_to_array(replace(replace(keywords::text, '[', ''), ']', ''))) as keyword, COUNT(*) as count
             FROM people
             WHERE user_id = $1 AND keywords IS NOT NULL
             GROUP BY keyword
             ORDER BY count DESC
             LIMIT 10
-        """, user_id)
-        
-        # Top companies
-        top_companies = await conn.fetch("""
-            SELECT 
-                current_company,
-                COUNT(*) as count
+            """,
+            user_id
+        )
+        top_companies = await conn.fetch(
+            """
+            SELECT current_company, COUNT(*) as count
             FROM people
             WHERE user_id = $1 AND current_company IS NOT NULL AND current_company != ''
             GROUP BY current_company
             ORDER BY count DESC
             LIMIT 10
-        """, user_id)
-        
+            """,
+            user_id
+        )
         analysis = {
             "overview": dict(stats),
             "top_keywords": [dict(r) for r in top_keywords],
             "top_companies": [dict(r) for r in top_companies]
         }
-        
         return json.dumps(analysis, indent=2)
-
 
 @mcp.tool()
 async def export_network_csv() -> str:
-    """
-    Export your entire LinkedIn network to CSV format
-    
-    Returns:
-        CSV string with all your network data (full_name, email, company, skills, etc.)
-    """
     user_id = await get_user_id()
     pool = await get_db()
-    
     async with pool.acquire() as conn:
-        # Get all user's network data
-        results = await conn.fetch("""
+        results = await conn.fetch(
+            """
             SELECT 
-                full_name,
-                email,
-                linkedin_url,
-                headline,
-                about,
-                current_company,
-                current_company_linkedin_url,
-                current_company_website_url,
-                current_company_detail,
-                experiences,
-                skills,
-                education,
-                keywords
+                full_name, email, linkedin_url, headline, about,
+                current_company, current_company_linkedin_url,
+                current_company_website_url, current_company_detail,
+                experiences, skills, education, keywords
             FROM people
             WHERE user_id = $1
             ORDER BY full_name
-        """, user_id)
-        
+            """,
+            user_id
+        )
         if not results:
             return "No data found in your network."
-        
-        # Generate CSV
-        import csv
-        import io
-        
+        import csv, io
         output = io.StringIO()
         writer = csv.writer(output)
-        
-        # Write header
         writer.writerow([
-            'Name', 'Email', 'LinkedIn URL', 'Headline', 'About',
-            'Company', 'Company LinkedIn', 'Company Website', 'Company Detail',
-            'Experiences', 'Skills', 'Education', 'Keywords'
+            'Name','Email','LinkedIn URL','Headline','About',
+            'Company','Company LinkedIn','Company Website','Company Detail',
+            'Experiences','Skills','Education','Keywords'
         ])
-        
-        # Write data rows
         for row in results:
             writer.writerow([
-                row.get('full_name', ''),
-                row.get('email', ''),
-                row.get('linkedin_url', ''),
-                row.get('headline', ''),
-                row.get('about', ''),
-                row.get('current_company', ''),
-                row.get('current_company_linkedin_url', ''),
-                row.get('current_company_website_url', ''),
+                row.get('full_name', ''), row.get('email', ''), row.get('linkedin_url', ''),
+                row.get('headline', ''), row.get('about', ''), row.get('current_company', ''),
+                row.get('current_company_linkedin_url', ''), row.get('current_company_website_url', ''),
                 json.dumps(row.get('current_company_detail')) if row.get('current_company_detail') else '',
                 json.dumps(row.get('experiences')) if row.get('experiences') else '',
                 json.dumps(row.get('skills')) if row.get('skills') else '',
                 json.dumps(row.get('education')) if row.get('education') else '',
                 json.dumps(row.get('keywords')) if row.get('keywords') else ''
             ])
-        
         csv_content = output.getvalue()
         output.close()
-        
         return f"Your LinkedIn network CSV ({len(results)} contacts):\n\n{csv_content}"
 
-
-# Railway/Deployment configuration
-# Railway/Deployment configuration
+# -------------------------------------------------------------------
+# Deployment
+# -------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or "8000")
 
     if os.getenv("PORT"):
-        # Running on Railway - use SSE app with header capture
         print(f"🚀 Starting MCP server on port {port} (Railway mode)")
 
-        # Build the SSE app with explicit routes
-        # These become available at https://<host>/messages and https://<host>/sse
+        # Use trailing slash on messages
         sse_app = create_sse_app(
             mcp,
-            message_path="/messages",
+            message_path="/messages/",   # <-- changed here
             sse_path="/sse",
         )
 
-        # ASGI middleware to push API key header into the ContextVar per request
         class HeaderToContextMiddleware:
-            def __init__(self, app):
-                self.app = app
-
+            def __init__(self, app): self.app = app
             async def __call__(self, scope, receive, send):
-                if scope["type"] == "http":
-                    # headers: list[tuple[bytes, bytes]]; normalized to lowercase by ASGI
-                    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-                    api_key = (
-                        headers.get("api_key")
-                        or headers.get("x-api-key")
-                        or headers.get("api-key")
-                        or headers.get("authorization")  # e.g., "Bearer <token>"
-                    )
+                if scope["type"] in ("http","websocket"):
+                    headers = {k.decode().lower(): v.decode() for k,v in scope.get("headers",[])}
+                    api_key = headers.get("api_key") or headers.get("x-api-key") or headers.get("api-key") or headers.get("authorization")
                     if api_key and api_key.lower().startswith("bearer "):
-                        api_key = api_key.split(" ", 1)[1].strip()
-
+                        api_key = api_key.split(" ",1)[1].strip()
                     token = current_api_key.set(api_key)
-                    try:
-                        await self.app(scope, receive, send)
-                    finally:
-                        current_api_key.reset(token)
-                else:
-                    await self.app(scope, receive, send)
+                    try: await self.app(scope, receive, send)
+                    finally: current_api_key.reset(token)
+                else: await self.app(scope, receive, send)
 
         wrapped_sse_app = HeaderToContextMiddleware(sse_app)
 
-        # Mount the SSE app (it serves /messages and /sse itself)
         fastapi_root = FastAPI()
+        @fastapi_root.get("/")
+        async def health(): return {"status":"ok","service":"LinkedIn Network MCP"}
         fastapi_root.mount("/", wrapped_sse_app)
 
         uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
-
     else:
-        # Running locally - use STDIO transport (for Cursor)
         print("🔧 Starting MCP server in STDIO mode (for Cursor)")
         mcp.run()
