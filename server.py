@@ -217,6 +217,163 @@ async def analyze_network() -> str:
         }
         return json.dumps(analysis, indent=2)
 
+def format_cell(text, max_length=50):
+    """Format cell content for table, truncate if too long"""
+    if not text:
+        return ""
+    text = str(text).strip()
+    # Remove newlines and extra spaces
+    text = " ".join(text.split())
+    if len(text) > max_length:
+        return text[:max_length-3] + "..."
+    return text
+
+def extract_company_name(company_text):
+    """Extract company name from current_company field"""
+    if not company_text:
+        return ""
+    # Try to extract just the company name
+    company_text = str(company_text).strip()
+    # If it contains "at" or "|", take the first part
+    if " at " in company_text:
+        company_text = company_text.split(" at ")[1].split(" (")[0].strip()
+    elif "|" in company_text:
+        company_text = company_text.split("|")[0].strip()
+    elif "(" in company_text:
+        company_text = company_text.split("(")[0].strip()
+    return format_cell(company_text, 40)
+
+def format_experiences_for_table(experiences):
+    """Format experiences into readable text for table"""
+    if not experiences:
+        return ""
+    
+    try:
+        if isinstance(experiences, str):
+            exp_data = json.loads(experiences)
+        else:
+            exp_data = experiences
+        
+        if isinstance(exp_data, list):
+            formatted = []
+            for exp in exp_data[:2]:  # Limit to first 2 experiences
+                if isinstance(exp, dict):
+                    title = exp.get('title', '')
+                    company = exp.get('name') or exp.get('company', '')
+                    period = exp.get('period', '')
+                    if title and company:
+                        exp_str = f"{title} at {company}"
+                        if period:
+                            exp_str += f" ({period})"
+                        formatted.append(exp_str)
+                    elif title:
+                        formatted.append(title)
+            return " | ".join(formatted) if formatted else ""
+        else:
+            return str(exp_data)
+    except:
+        return format_cell(str(experiences), 50)
+
+@mcp.tool()
+async def export_network_table(limit: int = 50) -> str:
+    """
+    Export your LinkedIn network as a formatted table (CSV-like) that displays in Cursor
+    
+    Args:
+        limit: Maximum number of contacts to display (default: 50)
+    
+    Returns:
+        Markdown table with network data formatted for display in Cursor
+    """
+    user_id = await get_user_id()
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        results = await conn.fetch(
+            """
+            SELECT 
+                full_name, email, linkedin_url, headline, about,
+                current_company, current_company_detail, experiences, skills, keywords
+            FROM people
+            WHERE user_id = $1
+            ORDER BY full_name
+            LIMIT $2
+            """,
+            user_id, limit
+        )
+        if not results:
+            return "No data found in your network."
+        
+        # Build markdown table with comprehensive columns
+        output = []
+        output.append("| Full Name | Email | LinkedIn URL | Headline | About | Current Company | Experience | Skills | Keywords |")
+        output.append("|-----------|-------|--------------|----------|------|-----------------|------------|--------|----------|")
+        
+        # Table rows
+        for row in results:
+            full_name = format_cell(row.get('full_name', '') or '', 25)
+            email = format_cell(row.get('email', '') or '', 30)
+            linkedin_url = format_cell(row.get('linkedin_url', '') or '', 35)
+            headline = format_cell(row.get('headline', '') or '', 45)
+            about = format_cell(row.get('about', '') or '', 60)
+            company = extract_company_name(row.get('current_company', '') or row.get('current_company_detail', ''))
+            company = format_cell(company, 35)
+            
+            # Format experiences
+            experiences_text = format_experiences_for_table(row.get('experiences'))
+            experiences_text = format_cell(experiences_text, 50)
+            
+            # Format skills
+            skills_text = row.get('skills', '') or ''
+            if skills_text:
+                try:
+                    skills_data = json.loads(skills_text) if isinstance(skills_text, str) else skills_text
+                    if isinstance(skills_data, list):
+                        skills_list = [str(s.get('title', s.get('name', s.get('skill', s))) if isinstance(s, dict) else s) for s in skills_data]
+                        skills = ", ".join(skills_list)
+                    else:
+                        skills = str(skills_data)
+                except:
+                    skills = str(skills_text)
+            else:
+                skills = ""
+            skills = format_cell(skills, 40)
+            
+            # Format keywords
+            keywords_text = row.get('keywords', '') or ''
+            if keywords_text:
+                try:
+                    if isinstance(keywords_text, str):
+                        if keywords_text.strip().startswith('['):
+                            kw_data = json.loads(keywords_text)
+                        else:
+                            kw_data = [k.strip() for k in keywords_text.split(',') if k.strip()]
+                    else:
+                        kw_data = keywords_text
+                    if isinstance(kw_data, list):
+                        keywords = " | ".join([str(k) for k in kw_data if k and str(k).strip().lower() != 'null'])
+                    else:
+                        keywords = str(kw_data)
+                except:
+                    keywords = str(keywords_text)
+            else:
+                keywords = ""
+            keywords = format_cell(keywords, 35)
+            
+            # Escape pipes in cells
+            full_name = full_name.replace('|', '\\|')
+            email = email.replace('|', '\\|')
+            linkedin_url = linkedin_url.replace('|', '\\|')
+            headline = headline.replace('|', '\\|')
+            about = about.replace('|', '\\|')
+            company = company.replace('|', '\\|')
+            experiences_text = experiences_text.replace('|', '\\|')
+            skills = skills.replace('|', '\\|')
+            keywords = keywords.replace('|', '\\|')
+            
+            output.append(f"| {full_name} | {email} | {linkedin_url} | {headline} | {about} | {company} | {experiences_text} | {skills} | {keywords} |")
+        
+        return "\n".join(output)
+
 
 # -------------------------------------------------------------------
 # Deployment
