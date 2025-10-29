@@ -18,6 +18,18 @@ load_dotenv(override=False)
 # Create MCP server
 mcp = FastMCP("LinkedIn Network")
 
+# Middleware to extract API_KEY from headers (for SSE transport)
+@mcp.server.middleware()
+async def extract_api_key(request, call_next):
+    """Extract API_KEY from HTTP headers in SSE mode"""
+    # Check if API_KEY is in headers
+    api_key_header = request.headers.get("api-key") or request.headers.get("API_KEY")
+    if api_key_header and not os.getenv("API_KEY"):
+        # Temporarily set it for this request
+        os.environ["API_KEY"] = api_key_header
+    response = await call_next(request)
+    return response
+
 # DATABASE_URL: 
 # - Local dev: loaded from .env file
 # - Railway: set in Railway environment variables
@@ -25,10 +37,11 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise Exception("DATABASE_URL must be set in .env file (local) or Railway environment variables")
 
-# API_KEY: ONLY from mcp.json env section, NEVER from .env file
-# mcp.json sets this when Cursor spawns the process
-# override=False ensures mcp.json's API_KEY is never overwritten by .env
-API_KEY = os.getenv("API_KEY")
+# API_KEY: 
+# - For STDIO (local): from mcp.json env section
+# - For SSE (Railway): from HTTP headers
+# - NEVER from .env file
+API_KEY = os.getenv("API_KEY")  # Will be set from headers for SSE transport
 
 db_pool = None
 
@@ -40,12 +53,16 @@ async def get_db():
     return db_pool
 
 async def get_user_id():
-    """API_KEY is the user_id directly"""
-    if not API_KEY:
-        raise Exception("API_KEY not set. Please add your API key to Cursor MCP config.")
+    """Get user_id from API_KEY (from headers in SSE mode or env in STDIO mode)"""
+    # Check environment variable (updated by middleware from headers in SSE mode)
+    # or use global (set at startup for STDIO mode)
+    user_id = os.getenv("API_KEY") or API_KEY
+    
+    if not user_id:
+        raise Exception("API_KEY not set. Please add your API key to Cursor MCP config headers.")
     
     # API_KEY is the user_id
-    return API_KEY
+    return user_id
 
 
 @mcp.tool()
