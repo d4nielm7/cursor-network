@@ -5,6 +5,7 @@ Users only need their API_KEY, DATABASE_URL is configured on Railway
 """
 #.venv\Scripts\activate   
 from fastmcp import FastMCP
+from fastmcp.server.http import create_sse_app
 import asyncpg
 import os
 import json
@@ -337,9 +338,10 @@ if __name__ == "__main__":
                 current_api_key.reset(token)
             return response
         
-        # Mount the SSE endpoint served by FastMCP
-        app.mount("/sse", mcp.sse_app())
-        app.mount("/", mcp.sse_app())  # Also mount at root for compatibility
+        # Mount the SSE endpoint served by FastMCP (using modern API)
+        sse_app = create_sse_app(mcp)
+        app.mount("/sse", sse_app)
+        app.mount("/", sse_app)  # Also mount at root for compatibility
         
         # Run with uvicorn (works on Railway)
         uvicorn.run(app, host="0.0.0.0", port=port)
