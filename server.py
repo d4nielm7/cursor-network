@@ -9,6 +9,9 @@ import asyncpg
 import os
 import json
 from dotenv import load_dotenv
+from contextvars import ContextVar
+from fastapi import FastAPI, Request
+import uvicorn
 
 # Load environment variables from .env file (override=False means existing env vars take precedence)
 # This loads DATABASE_URL for local development
@@ -18,8 +21,8 @@ load_dotenv(override=False)
 # Create MCP server
 mcp = FastMCP("LinkedIn Network")
 
-# NOTE: FastMCP does not expose a "server.middleware" API; header handling is
-# managed internally by the SSE transport. We read API_KEY from environment.
+# Per-request API key storage (safe for async/concurrent usage)
+current_api_key: ContextVar[str | None] = ContextVar("current_api_key", default=None)
 
 # DATABASE_URL: 
 # - Local dev: loaded from .env file
@@ -44,13 +47,14 @@ async def get_db():
     return db_pool
 
 async def get_user_id():
-    """Get user_id from API_KEY (from headers in SSE mode or env in STDIO mode)"""
-    # Check environment variable (can be set from headers in SSE mode by FastMCP)
-    # or use global (set at startup for STDIO mode)
-    user_id = os.getenv("API_KEY") or API_KEY
+    """Get user_id from API_KEY (prefer per-request header; fall back to env)"""
+    # Prefer header captured for this request
+    header_key = current_api_key.get()
+    # Fall back to environment/global for local dev or legacy usage
+    user_id = header_key or os.getenv("API_KEY") or API_KEY
     
     if not user_id:
-        raise Exception("API_KEY not set. Please add your API key to Cursor MCP config headers.")
+        raise Exception("API_KEY not set. Provide it via 'API_KEY'/'X-API-Key' header or env.")
     
     # API_KEY is the user_id
     return user_id
@@ -301,20 +305,44 @@ async def export_network_csv() -> str:
 
 # Railway/Deployment configuration
 if __name__ == "__main__":
-    # Railway automatically sets PORT environment variable
-    # If running on Railway, use SSE transport
-    # If running locally, use STDIO transport (for Cursor)
+    port = int(os.getenv("PORT") or "8000")
     
-    port = os.getenv("PORT")
-    if port:
-        # Running on Railway - use SSE transport
+    # Check if running locally (no PORT) or on Railway (PORT set)
+    if os.getenv("PORT"):
+        # Running on Railway - use FastAPI with middleware for header capture
         print(f"🚀 Starting MCP server on port {port} (Railway mode)")
-        try:
-            # Try with host parameter
-            mcp.run(transport="sse", host="0.0.0.0", port=int(port))
-        except TypeError:
-            # If parameters not supported, use default SSE mode
-            mcp.run(transport="sse")
+        
+        # Build a FastAPI app and mount FastMCP's SSE app
+        app = FastAPI()
+        
+        @app.middleware("http")
+        async def capture_api_key(request: Request, call_next):
+            # Accept several common header spellings
+            api_key = (
+                request.headers.get("api_key")
+                or request.headers.get("API_KEY")
+                or request.headers.get("x-api-key")
+                or request.headers.get("X-API-Key")
+                or request.headers.get("authorization")  # e.g., "Bearer <token>"
+            )
+            # If Authorization: Bearer <token>, extract token
+            if api_key and api_key.lower().startswith("bearer "):
+                api_key = api_key.split(" ", 1)[1].strip()
+            
+            # Store per-request
+            token = current_api_key.set(api_key)
+            try:
+                response = await call_next(request)
+            finally:
+                current_api_key.reset(token)
+            return response
+        
+        # Mount the SSE endpoint served by FastMCP
+        app.mount("/sse", mcp.sse_app())
+        app.mount("/", mcp.sse_app())  # Also mount at root for compatibility
+        
+        # Run with uvicorn (works on Railway)
+        uvicorn.run(app, host="0.0.0.0", port=port)
     else:
         # Running locally - use STDIO transport (for Cursor)
         print("🔧 Starting MCP server in STDIO mode (for Cursor)")
