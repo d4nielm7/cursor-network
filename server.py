@@ -45,7 +45,7 @@ async def get_db():
 
 async def get_user_id():
     """Get user_id from API_KEY (from headers in SSE mode or env in STDIO mode)"""
-    # Check environment variable (updated by middleware from headers in SSE mode)
+    # Check environment variable (can be set from headers in SSE mode by FastMCP)
     # or use global (set at startup for STDIO mode)
     user_id = os.getenv("API_KEY") or API_KEY
     
