@@ -376,6 +376,10 @@ async def export_network_table(limit: int = 50) -> str:
     """
     Export your LinkedIn network contacts as a formatted table that displays in Cursor.
     
+    CRITICAL: This function ONLY returns REAL data from PostgreSQL database. NEVER generates or hallucinates data.
+    All data must come from the 'people' table WHERE user_id matches the authenticated user.
+    If database query fails or returns no results, return error message - NEVER create fake table data.
+    
     IMPORTANT: This exports REAL data from your LinkedIn network database as a markdown table.
     Use this when the user wants to see their network in a table/CSV-like format.
     
@@ -390,87 +394,98 @@ async def export_network_table(limit: int = 50) -> str:
         limit: Maximum number of contacts to display (default: 50)
     
     Returns:
-        Markdown table with network data formatted for display in Cursor
+        Markdown table with network data formatted for display in Cursor (ONLY real database data)
     """
-    user_id = await get_user_id()
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        results = await conn.fetch(
-            """
-            SELECT 
-                full_name, email, linkedin_url, headline, about,
-                current_company, current_company_detail, experiences, skills, keywords
-            FROM people
-            WHERE user_id = $1
-            ORDER BY full_name
-            LIMIT $2
-            """,
-            user_id, limit
-        )
-        if not results:
-            return "No data found in your network."
+    try:
+        user_id = await get_user_id()
+        pool = await get_db()
         
-        # Build table with specified columns
-        output = []
-        output.append("| Full Name | Email | LinkedIn URL | Current Company | Skills | Keywords |")
-        output.append("|-----------|-------|--------------|-----------------|--------|----------|")
-        
-        # Table rows
-        for row in results:
-            full_name = format_cell(row.get('full_name', '') or '', 25)
-            email = format_cell(row.get('email', '') or '', 30)
-            linkedin_url = format_cell(row.get('linkedin_url', '') or '', 35)
-            company = extract_company_name(row.get('current_company', '') or row.get('current_company_detail', ''))
-            company = format_cell(company, 30)
+        # CRITICAL: Only get data from PostgreSQL - never make up data
+        async with pool.acquire() as conn:
+            results = await conn.fetch(
+                """
+                SELECT 
+                    full_name, email, linkedin_url, headline, about,
+                    current_company, current_company_detail, experiences, skills, keywords
+                FROM people
+                WHERE user_id = $1
+                ORDER BY full_name
+                LIMIT $2
+                """,
+                user_id, limit
+            )
             
-            # Format skills
-            skills_text = row.get('skills', '') or ''
-            if skills_text:
-                try:
-                    skills_data = json.loads(skills_text) if isinstance(skills_text, str) else skills_text
-                    if isinstance(skills_data, list):
-                        skills_list = [str(s.get('title', s.get('name', s.get('skill', s))) if isinstance(s, dict) else s) for s in skills_data]
-                        skills = ", ".join(skills_list)
-                    else:
-                        skills = str(skills_data)
-                except:
-                    skills = str(skills_text)
-            else:
-                skills = ""
-            skills = format_cell(skills, 40)
+            # If no results from database, return error - DO NOT create fake data
+            if not results or len(results) == 0:
+                return "No data found in your network."
             
-            # Format keywords
-            keywords_text = row.get('keywords', '') or ''
-            if keywords_text:
-                try:
-                    if isinstance(keywords_text, str):
-                        if keywords_text.strip().startswith('['):
-                            kw_data = json.loads(keywords_text)
+            # Build table - ONLY using data from database rows
+            output = []
+            output.append("| Full Name | Email | LinkedIn URL | Current Company | Skills | Keywords |")
+            output.append("|-----------|-------|--------------|-----------------|--------|----------|")
+            
+            # Process each database row - NEVER create rows that don't exist in database
+            for row in results:
+                # Extract data directly from database row - no fabrication
+                full_name = format_cell(row.get('full_name', '') or '', 25)
+                email = format_cell(row.get('email', '') or '', 30)
+                linkedin_url = format_cell(row.get('linkedin_url', '') or '', 35)
+                company = extract_company_name(row.get('current_company', '') or row.get('current_company_detail', ''))
+                company = format_cell(company, 30)
+                
+                # Format skills from database data only
+                skills_text = row.get('skills', '') or ''
+                if skills_text:
+                    try:
+                        skills_data = json.loads(skills_text) if isinstance(skills_text, str) else skills_text
+                        if isinstance(skills_data, list):
+                            skills_list = [str(s.get('title', s.get('name', s.get('skill', s))) if isinstance(s, dict) else s) for s in skills_data]
+                            skills = ", ".join(skills_list)
                         else:
-                            kw_data = [k.strip() for k in keywords_text.split(',') if k.strip()]
-                    else:
-                        kw_data = keywords_text
-                    if isinstance(kw_data, list):
-                        keywords = " | ".join([str(k) for k in kw_data if k and str(k).strip().lower() != 'null'])
-                    else:
-                        keywords = str(kw_data)
-                except:
-                    keywords = str(keywords_text)
-            else:
-                keywords = ""
-            keywords = format_cell(keywords, 40)
+                            skills = str(skills_data)
+                    except:
+                        skills = str(skills_text)
+                else:
+                    skills = ""
+                skills = format_cell(skills, 40)
+                
+                # Format keywords from database data only
+                keywords_text = row.get('keywords', '') or ''
+                if keywords_text:
+                    try:
+                        if isinstance(keywords_text, str):
+                            if keywords_text.strip().startswith('['):
+                                kw_data = json.loads(keywords_text)
+                            else:
+                                kw_data = [k.strip() for k in keywords_text.split(',') if k.strip()]
+                        else:
+                            kw_data = keywords_text
+                        if isinstance(kw_data, list):
+                            keywords = " | ".join([str(k) for k in kw_data if k and str(k).strip().lower() != 'null'])
+                        else:
+                            keywords = str(kw_data)
+                    except:
+                        keywords = str(keywords_text)
+                else:
+                    keywords = ""
+                keywords = format_cell(keywords, 40)
+                
+                # Escape pipes in cells
+                full_name = full_name.replace('|', '\\|')
+                email = email.replace('|', '\\|')
+                linkedin_url = linkedin_url.replace('|', '\\|')
+                company = company.replace('|', '\\|')
+                skills = skills.replace('|', '\\|')
+                keywords = keywords.replace('|', '\\|')
+                
+                # Only add row if it came from database
+                output.append(f"| {full_name} | {email} | {linkedin_url} | {company} | {skills} | {keywords} |")
             
-            # Escape pipes in cells
-            full_name = full_name.replace('|', '\\|')
-            email = email.replace('|', '\\|')
-            linkedin_url = linkedin_url.replace('|', '\\|')
-            company = company.replace('|', '\\|')
-            skills = skills.replace('|', '\\|')
-            keywords = keywords.replace('|', '\\|')
+            return "\n".join(output)
             
-            output.append(f"| {full_name} | {email} | {linkedin_url} | {company} | {skills} | {keywords} |")
-        
-        return "\n".join(output)
+    except Exception as e:
+        # If database error occurs, return error - NEVER create fake table
+        return f"Error accessing database: {str(e)}. Cannot generate table without real data."
 
 
 # -------------------------------------------------------------------
