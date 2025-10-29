@@ -118,17 +118,51 @@ async def analyze_network() -> str:
             "SELECT COUNT(*) as total_connections, COUNT(DISTINCT current_company) as unique_companies FROM people WHERE user_id = $1",
             user_id
         )
-        top_keywords = await conn.fetch(
-            """
-            SELECT unnest(string_to_array(replace(replace(keywords::text, '[', ''), ']', ''))) as keyword, COUNT(*) as count
-            FROM people
-            WHERE user_id = $1 AND keywords IS NOT NULL
-            GROUP BY keyword
-            ORDER BY count DESC
-            LIMIT 10
-            """,
-            user_id
-        )
+        # Extract keywords from text field - handle JSON array strings
+        # Keywords stored as text, may be JSON array like '["ai", "founder"]' or comma-separated
+        try:
+            top_keywords = await conn.fetch(
+                """
+                SELECT trim(both ' "' from keyword) as keyword, COUNT(*) as count
+                FROM (
+                    SELECT jsonb_array_elements_text(keywords::jsonb) as keyword
+                    FROM people
+                    WHERE user_id = $1 
+                      AND keywords IS NOT NULL 
+                      AND keywords != ''
+                      AND keywords != '[]'
+                      AND trim(keywords) != ''
+                ) AS keywords_unnested
+                WHERE keyword IS NOT NULL 
+                  AND trim(keyword) != '' 
+                  AND trim(keyword) != 'null'
+                GROUP BY keyword
+                ORDER BY count DESC
+                LIMIT 10
+                """,
+                user_id
+            )
+        except Exception:
+            # Fallback: parse as comma-separated text
+            top_keywords = await conn.fetch(
+                """
+                SELECT trim(both ' "' from keyword) as keyword, COUNT(*) as count
+                FROM (
+                    SELECT unnest(string_to_array(keywords::text, ',')) as keyword
+                    FROM people
+                    WHERE user_id = $1 
+                      AND keywords IS NOT NULL 
+                      AND keywords != ''
+                ) AS keywords_unnested
+                WHERE keyword IS NOT NULL 
+                  AND trim(keyword) != '' 
+                  AND trim(keyword) != 'null'
+                GROUP BY keyword
+                ORDER BY count DESC
+                LIMIT 10
+                """,
+                user_id
+            )
         top_companies = await conn.fetch(
             """
             SELECT current_company, COUNT(*) as count
