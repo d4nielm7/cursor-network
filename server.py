@@ -48,19 +48,36 @@ async def get_user_id():
     return user_id
 
 # -------------------------------------------------------------------
-# TOOLS
+# TOOLS - LinkedIn Network Query Tools
 # -------------------------------------------------------------------
+# IMPORTANT FOR AI ASSISTANT:
+# These tools access REAL LinkedIn network data from a PostgreSQL database.
+# Never make up or hallucinate network data - always use these tools to retrieve actual information.
+# When user mentions "network", "connections", "contacts", "LinkedIn", search/filter/profile tools should be used.
+# When user mentions specific topics like "AI", "founder", extract keywords and search the actual network.
+# -------------------------------------------------------------------
+
 @mcp.tool()
 async def search_network(query: str, limit: int = 10) -> str:
     """
-    Search your LinkedIn network by name, job title, company, or skills
+    Search your actual LinkedIn network contacts by name, job title, company, skills, or keywords.
+    
+    IMPORTANT: This searches REAL data from your LinkedIn network stored in the database. 
+    Always use this when the user asks about people, contacts, or network connections.
+    
+    Examples of when to use:
+    - "find AI people in my network" -> search_network("AI", limit=20)
+    - "who works at Google?" -> search_network("Google")
+    - "show me founders" -> search_network("founder")
+    - "people with marketing skills" -> search_network("marketing")
+    - "search for Chen Katz" -> search_network("Chen Katz")
     
     Args:
-        query: Search query (name, title, company, keyword)
+        query: Search term (name, title, company, experience, skill, keyword - will match across all fields)
         limit: Maximum results to return (default: 10)
     
     Returns:
-        JSON string with matching profiles
+        JSON string with matching profiles from your actual LinkedIn network
     """
     user_id = await get_user_id()
     pool = await get_db()
@@ -92,13 +109,21 @@ async def search_network(query: str, limit: int = 10) -> str:
 @mcp.tool()
 async def get_profile(name: str) -> str:
     """
-    Get detailed profile for a specific person in your network
+    Get detailed profile information for a specific person in your LinkedIn network.
+    
+    IMPORTANT: This retrieves REAL profile data from your LinkedIn network database.
+    Use this when the user asks about a specific person by name or wants detailed info about someone.
+    
+    Examples of when to use:
+    - "tell me about Chen Katz" -> get_profile("Chen Katz")
+    - "what's Esther's background?" -> get_profile("Esther")
+    - "show me details on Omer Har" -> get_profile("Omer Har")
     
     Args:
-        name: Person's full name (partial match supported)
+        name: Person's full name or partial name (e.g., "Chen Katz" or just "Chen")
     
     Returns:
-        JSON string with full profile data
+        JSON string with full profile data including headline, company, experience, skills, etc.
     """
     user_id = await get_user_id()
     pool = await get_db()
@@ -114,14 +139,23 @@ async def get_profile(name: str) -> str:
 @mcp.tool()
 async def filter_by_keywords(keywords: List[str], limit: int = 20) -> str:
     """
-    Filter network by targeting keywords (e.g., 'ai', 'founder', 'saas')
+    Filter your LinkedIn network contacts by specific keywords found in their profiles.
+    
+    IMPORTANT: This searches REAL keyword data from your LinkedIn network database.
+    Use this when the user wants to find people with specific expertise, roles, or interests.
+    
+    Examples of when to use:
+    - "find people with AI experience" -> filter_by_keywords(["ai"], limit=20)
+    - "show me founders and investors" -> filter_by_keywords(["founder", "investor"])
+    - "people in marketing and sales" -> filter_by_keywords(["marketing", "sales"])
+    - "who has saas or cloud skills?" -> filter_by_keywords(["saas", "cloud"])
     
     Args:
-        keywords: List of keywords to match
-        limit: Maximum results (default: 20)
+        keywords: List of keyword strings to match (e.g., ["ai", "founder", "saas"])
+        limit: Maximum results to return (default: 20)
     
     Returns:
-        JSON string with matching profiles
+        JSON string with matching profiles that contain the specified keywords
     """
     user_id = await get_user_id()
     pool = await get_db()
@@ -142,10 +176,24 @@ async def filter_by_keywords(keywords: List[str], limit: int = 20) -> str:
 @mcp.tool()
 async def analyze_network() -> str:
     """
-    Get statistics about your LinkedIn network
+    Get statistics and insights about your LinkedIn network.
+    
+    IMPORTANT: This analyzes REAL data from your LinkedIn network stored in the database.
+    Use this when the user asks about network statistics, overview, or wants to understand their network composition.
+    
+    Examples of when to use:
+    - "analyze my network" -> analyze_network()
+    - "what's in my LinkedIn network?" -> analyze_network()
+    - "give me network stats" -> analyze_network()
+    - "how many connections do I have?" -> analyze_network()
+    - "what are the top companies in my network?" -> analyze_network()
     
     Returns:
-        JSON with network stats (total connections, top skills, keywords, companies)
+        JSON with network stats including:
+        - Total number of connections
+        - Unique companies
+        - Top keywords (most common tags)
+        - Top companies (by number of connections)
     """
     user_id = await get_user_id()
     pool = await get_db()
@@ -243,6 +291,55 @@ def extract_company_name(company_text):
         company_text = company_text.split("(")[0].strip()
     return format_cell(company_text, 40)
 
+def extract_search_keywords(query: str) -> List[str]:
+    """
+    Extract relevant keywords from natural language query.
+    Examples:
+    - "AI people" -> ["ai"]
+    - "founders and investors" -> ["founder", "investor"]
+    - "people with marketing or sales skills" -> ["marketing", "sales"]
+    """
+    import re
+    query_lower = query.lower()
+    
+    # Common patterns to extract keywords
+    keywords = []
+    
+    # Keywords that should be extracted
+    common_keywords = [
+        'ai', 'artificial intelligence', 'machine learning', 'ml', 'founder', 'founders',
+        'investor', 'ceo', 'cfo', 'cto', 'coo', 'cmo', 'marketing', 'sales', 
+        'saas', 'startup', 'startups', 'venture', 'vc', 'funding', 'tech',
+        'software', 'developer', 'engineer', 'consultant', 'consulting',
+        'operations', 'operations', 'product', 'designer', 'design'
+    ]
+    
+    for kw in common_keywords:
+        if kw in query_lower:
+            keywords.append(kw)
+    
+    # Also extract quoted terms or specific phrases
+    quoted = re.findall(r'"([^"]+)"', query)
+    keywords.extend([q.lower() for q in quoted])
+    
+    # Extract single important words (3+ chars, not common words)
+    stop_words = {'the', 'and', 'or', 'in', 'on', 'at', 'with', 'for', 'my', 'me', 'i', 'people', 'show', 'find', 'get'}
+    words = re.findall(r'\b[a-z]{3,}\b', query_lower)
+    important_words = [w for w in words if w not in stop_words and w not in keywords]
+    
+    # Take top 3 important words
+    keywords.extend(important_words[:3])
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_keywords = []
+    for kw in keywords:
+        if kw not in seen:
+            seen.add(kw)
+            unique_keywords.append(kw)
+    
+    return unique_keywords[:5]  # Limit to 5 keywords
+
 def format_experiences_for_table(experiences):
     """Format experiences into readable text for table"""
     if not experiences:
@@ -277,7 +374,17 @@ def format_experiences_for_table(experiences):
 @mcp.tool()
 async def export_network_table(limit: int = 50) -> str:
     """
-    Export your LinkedIn network as a formatted table (CSV-like) that displays in Cursor
+    Export your LinkedIn network contacts as a formatted table that displays in Cursor.
+    
+    IMPORTANT: This exports REAL data from your LinkedIn network database as a markdown table.
+    Use this when the user wants to see their network in a table/CSV-like format.
+    
+    Examples of when to use:
+    - "show my network as a table" -> export_network_table(limit=50)
+    - "export my network" -> export_network_table(limit=50)
+    - "give me my contacts in table format" -> export_network_table(limit=100)
+    
+    Columns included: Full Name, Email, LinkedIn URL, Current Company, Skills, Keywords
     
     Args:
         limit: Maximum number of contacts to display (default: 50)
