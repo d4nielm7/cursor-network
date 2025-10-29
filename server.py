@@ -305,46 +305,56 @@ async def export_network_csv() -> str:
 
 
 # Railway/Deployment configuration
+# Railway/Deployment configuration
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or "8000")
-    
-    # Check if running locally (no PORT) or on Railway (PORT set)
+
     if os.getenv("PORT"):
-        # Running on Railway - use FastAPI with middleware for header capture
+        # Running on Railway - use SSE app with header capture
         print(f"🚀 Starting MCP server on port {port} (Railway mode)")
-        
-        # Build a FastAPI app and mount FastMCP's SSE app
-        app = FastAPI()
-        
-        @app.middleware("http")
-        async def capture_api_key(request: Request, call_next):
-            # Accept several common header spellings
-            api_key = (
-                request.headers.get("api_key")
-                or request.headers.get("API_KEY")
-                or request.headers.get("x-api-key")
-                or request.headers.get("X-API-Key")
-                or request.headers.get("authorization")  # e.g., "Bearer <token>"
-            )
-            # If Authorization: Bearer <token>, extract token
-            if api_key and api_key.lower().startswith("bearer "):
-                api_key = api_key.split(" ", 1)[1].strip()
-            
-            # Store per-request
-            token = current_api_key.set(api_key)
-            try:
-                response = await call_next(request)
-            finally:
-                current_api_key.reset(token)
-            return response
-        
-        # Mount the SSE endpoint served by FastMCP (using modern API)
-        sse_app = create_sse_app(mcp)
-        app.mount("/sse", sse_app)
-        app.mount("/", sse_app)  # Also mount at root for compatibility
-        
-        # Run with uvicorn (works on Railway)
-        uvicorn.run(app, host="0.0.0.0", port=port)
+
+        # Build the SSE app with explicit routes
+        # These become available at https://<host>/messages and https://<host>/sse
+        sse_app = create_sse_app(
+            mcp,
+            message_path="/messages",
+            sse_path="/sse",
+        )
+
+        # ASGI middleware to push API key header into the ContextVar per request
+        class HeaderToContextMiddleware:
+            def __init__(self, app):
+                self.app = app
+
+            async def __call__(self, scope, receive, send):
+                if scope["type"] == "http":
+                    # headers: list[tuple[bytes, bytes]]; normalized to lowercase by ASGI
+                    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+                    api_key = (
+                        headers.get("api_key")
+                        or headers.get("x-api-key")
+                        or headers.get("api-key")
+                        or headers.get("authorization")  # e.g., "Bearer <token>"
+                    )
+                    if api_key and api_key.lower().startswith("bearer "):
+                        api_key = api_key.split(" ", 1)[1].strip()
+
+                    token = current_api_key.set(api_key)
+                    try:
+                        await self.app(scope, receive, send)
+                    finally:
+                        current_api_key.reset(token)
+                else:
+                    await self.app(scope, receive, send)
+
+        wrapped_sse_app = HeaderToContextMiddleware(sse_app)
+
+        # Mount the SSE app (it serves /messages and /sse itself)
+        fastapi_root = FastAPI()
+        fastapi_root.mount("/", wrapped_sse_app)
+
+        uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
+
     else:
         # Running locally - use STDIO transport (for Cursor)
         print("🔧 Starting MCP server in STDIO mode (for Cursor)")
