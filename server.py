@@ -18,17 +18,8 @@ load_dotenv(override=False)
 # Create MCP server
 mcp = FastMCP("LinkedIn Network")
 
-# Middleware to extract API_KEY from headers (for SSE transport)
-@mcp.server.middleware()
-async def extract_api_key(request, call_next):
-    """Extract API_KEY from HTTP headers in SSE mode"""
-    # Check if API_KEY is in headers
-    api_key_header = request.headers.get("api-key") or request.headers.get("API_KEY")
-    if api_key_header and not os.getenv("API_KEY"):
-        # Temporarily set it for this request
-        os.environ["API_KEY"] = api_key_header
-    response = await call_next(request)
-    return response
+# NOTE: FastMCP does not expose a "server.middleware" API; header handling is
+# managed internally by the SSE transport. We read API_KEY from environment.
 
 # DATABASE_URL: 
 # - Local dev: loaded from .env file
