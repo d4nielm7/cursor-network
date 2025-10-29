@@ -301,7 +301,12 @@ if __name__ == "__main__":
     if port:
         # Running on Railway - use SSE transport
         print(f"🚀 Starting MCP server on port {port} (Railway mode)")
-        mcp.run(transport="sse", port=int(port))
+        try:
+            # Try with host parameter
+            mcp.run(transport="sse", host="0.0.0.0", port=int(port))
+        except TypeError:
+            # If parameters not supported, use default SSE mode
+            mcp.run(transport="sse")
     else:
         # Running locally - use STDIO transport (for Cursor)
         print("🔧 Starting MCP server in STDIO mode (for Cursor)")
