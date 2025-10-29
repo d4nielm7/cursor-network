@@ -303,24 +303,18 @@ async def export_network_table(limit: int = 50) -> str:
         if not results:
             return "No data found in your network."
         
-        # Build markdown table with comprehensive columns
+        # Build table with specified columns
         output = []
-        output.append("| Full Name | Email | LinkedIn URL | Headline | About | Current Company | Experience | Skills | Keywords |")
-        output.append("|-----------|-------|--------------|----------|------|-----------------|------------|--------|----------|")
+        output.append("| Full Name | Email | LinkedIn URL | Current Company | Skills | Keywords |")
+        output.append("|-----------|-------|--------------|-----------------|--------|----------|")
         
         # Table rows
         for row in results:
             full_name = format_cell(row.get('full_name', '') or '', 25)
             email = format_cell(row.get('email', '') or '', 30)
             linkedin_url = format_cell(row.get('linkedin_url', '') or '', 35)
-            headline = format_cell(row.get('headline', '') or '', 45)
-            about = format_cell(row.get('about', '') or '', 60)
             company = extract_company_name(row.get('current_company', '') or row.get('current_company_detail', ''))
-            company = format_cell(company, 35)
-            
-            # Format experiences
-            experiences_text = format_experiences_for_table(row.get('experiences'))
-            experiences_text = format_cell(experiences_text, 50)
+            company = format_cell(company, 30)
             
             # Format skills
             skills_text = row.get('skills', '') or ''
@@ -357,20 +351,17 @@ async def export_network_table(limit: int = 50) -> str:
                     keywords = str(keywords_text)
             else:
                 keywords = ""
-            keywords = format_cell(keywords, 35)
+            keywords = format_cell(keywords, 40)
             
             # Escape pipes in cells
             full_name = full_name.replace('|', '\\|')
             email = email.replace('|', '\\|')
             linkedin_url = linkedin_url.replace('|', '\\|')
-            headline = headline.replace('|', '\\|')
-            about = about.replace('|', '\\|')
             company = company.replace('|', '\\|')
-            experiences_text = experiences_text.replace('|', '\\|')
             skills = skills.replace('|', '\\|')
             keywords = keywords.replace('|', '\\|')
             
-            output.append(f"| {full_name} | {email} | {linkedin_url} | {headline} | {about} | {company} | {experiences_text} | {skills} | {keywords} |")
+            output.append(f"| {full_name} | {email} | {linkedin_url} | {company} | {skills} | {keywords} |")
         
         return "\n".join(output)
 
