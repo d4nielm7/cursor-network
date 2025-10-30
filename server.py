@@ -108,17 +108,23 @@ async def export_network_to_csv() -> str:
         # Get CSV content
         csv_content = output.getvalue()
         
+        # Save CSV to file automatically
+        csv_filename = "linkedin_network_export.csv"
+        csv_path = Path(csv_filename)
+        csv_path.write_text(csv_content, encoding='utf-8')
+        
         # Encode as base64 for transmission
         csv_bytes = csv_content.encode('utf-8')
         encoded = base64.b64encode(csv_bytes).decode('utf-8')
         
         return json.dumps({
             "status": "success",
-            "filename": "linkedin_network_export.csv",
+            "filename": csv_filename,
+            "file_path": str(csv_path.absolute()),
             "row_count": len(people),
             "size_bytes": len(csv_bytes),
             "csv_content_base64": encoded,
-            "instructions": "Save this CSV to your local machine. Claude will help you save it."
+            "message": f"CSV saved to: {csv_path.absolute()}"
         }, indent=2)
         
     except Exception as e:

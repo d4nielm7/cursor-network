@@ -37,6 +37,11 @@ wheels/
 .DS_Store
 Thumbs.db
 
+.backup.py
+
+# Exported files
+linkedin_network_export.csv
+
 
 
 
