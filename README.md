@@ -1,3 +1,43 @@
+## My Python Project
+
+This is a simple Python project.
+
+### How to Run
+
+Run the main script:
+
+```bash
+python main.py
+```
+
+### How to Test
+
+Run the tests with pytest:
+
+```bash
+pytest test_main.py
+```
+
+# My Python Project
+
+This is a simple Python project.
+
+## How to Run
+
+To run the main script, execute:
+
+```bash
+python main.py
+```
+
+## How to Test
+
+To run the tests, execute:
+
+```bash
+pytest test_main.py
+```
+
 # LinkedIn Network MCP Server - Simple Setup
 
 Super simple MCP server to connect your LinkedIn network data in Neon to Cursor.
