@@ -17,6 +17,7 @@ from contextvars import ContextVar
 from fastapi import FastAPI
 import uvicorn
 from fastmcp.server.http import create_sse_app
+import base64
 
 load_dotenv(override=False)
 
@@ -25,16 +26,12 @@ mcp = FastMCP("LinkedIn Network CSV")
 # Per-request API key storage
 current_api_key: ContextVar[str | None] = ContextVar("current_api_key", default=None)
 
-# Local CSV file path - store in user's home directory
-CSV_FILE = Path.home() / "linkedin_network_export.csv"
+# Database configuration
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("API_KEY")
 
 if not DATABASE_URL:
     raise Exception("DATABASE_URL must be set in .env file or Railway environment variables")
-
-# Flag to track if we've exported
-_exported = False
 
 async def get_user_id():
     """Get user_id from context or env"""
@@ -44,16 +41,18 @@ async def get_user_id():
         raise Exception("API_KEY not set. Provide it via 'API_KEY'/'X-API-Key' header or env.")
     return user_id
 
-async def auto_export_to_csv():
-    """Automatically export database to local CSV on first connection"""
-    global _exported
+# -------------------------------------------------------------------
+# TOOLS - CSV Export and Query
+# -------------------------------------------------------------------
+
+@mcp.tool()
+async def export_network_to_csv() -> str:
+    """
+    Export your LinkedIn network from database to CSV format.
+    This returns the CSV content as base64 that you can save locally.
     
-    if _exported and CSV_FILE.exists():
-        print(f"✅ CSV already exists at: {CSV_FILE}")
-        return
-    
-    print("🔄 Downloading your LinkedIn network to CSV...")
-    
+    Use this first to download your network data!
+    """
     try:
         # Connect to database
         conn = await asyncpg.connect(DATABASE_URL)
@@ -79,242 +78,300 @@ async def auto_export_to_csv():
         await conn.close()
         
         if not people:
-            print("⚠️ No data found in database")
-            return
+            return json.dumps({
+                "status": "error",
+                "message": "No data found in database for your user_id"
+            }, indent=2)
         
-        # Write to CSV
-        with open(CSV_FILE, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=people[0].keys())
-            writer.writeheader()
-            
-            for person in people:
-                # Convert JSON fields to strings for CSV
-                row = dict(person)
-                for key in ['experiences', 'skills', 'education', 'keywords']:
-                    if row.get(key):
-                        row[key] = json.dumps(row[key], default=str)
-                writer.writerow(row)
+        # Create CSV in memory
+        import io
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=people[0].keys())
+        writer.writeheader()
         
-        _exported = True
-        print(f"✅ Exported {len(people)} contacts to: {CSV_FILE}")
+        for person in people:
+            # Convert JSON fields to strings for CSV
+            row = dict(person)
+            for key in ['experiences', 'skills', 'education', 'keywords']:
+                if row.get(key):
+                    row[key] = json.dumps(row[key], default=str)
+            writer.writerow(row)
+        
+        # Get CSV content
+        csv_content = output.getvalue()
+        
+        # Encode as base64 for transmission
+        csv_bytes = csv_content.encode('utf-8')
+        encoded = base64.b64encode(csv_bytes).decode('utf-8')
+        
+        return json.dumps({
+            "status": "success",
+            "filename": "linkedin_network_export.csv",
+            "row_count": len(people),
+            "size_bytes": len(csv_bytes),
+            "csv_content_base64": encoded,
+            "instructions": "Save this CSV to your local machine. Claude will help you save it."
+        }, indent=2)
         
     except Exception as e:
-        print(f"❌ Export failed: {e}")
-        raise
-
-def load_csv_data():
-    """Load CSV data into pandas DataFrame"""
-    if not CSV_FILE.exists():
-        raise Exception(f"CSV not found at {CSV_FILE}. Please use the initialize() tool first.")
-    
-    return pd.read_csv(CSV_FILE)
-
-# -------------------------------------------------------------------
-# TOOLS - Now work with LOCAL CSV data
-# -------------------------------------------------------------------
-
-@mcp.tool()
-async def initialize() -> str:
-    """
-    Initialize the MCP by downloading your LinkedIn network to CSV.
-    This should be called first when connecting to the MCP.
-    """
-    await auto_export_to_csv()
-    
-    if CSV_FILE.exists():
-        df = load_csv_data()
-        return json.dumps({
-            "status": "ready",
-            "message": f"LinkedIn network loaded: {len(df)} contacts",
-            "csv_location": str(CSV_FILE)
-        }, indent=2)
-    else:
         return json.dumps({
             "status": "error",
-            "message": "Failed to export CSV"
+            "message": f"Export failed: {str(e)}"
         }, indent=2)
+
+@mcp.tool()
+async def get_csv_data_sample() -> str:
+    """
+    Get a sample of the CSV data (first 10 rows) to preview.
+    Use export_network_to_csv() to get the full dataset.
+    """
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        user_id = await get_user_id()
+        
+        people = await conn.fetch(
+            """
+            SELECT 
+                full_name, email, linkedin_url, headline, current_company
+            FROM people
+            WHERE user_id = $1
+            ORDER BY full_name
+            LIMIT 10
+            """,
+            user_id
+        )
+        
+        await conn.close()
+        
+        return json.dumps([dict(p) for p in people], indent=2, default=str)
+        
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 @mcp.tool()
 async def search_network(query: str, limit: int = 10) -> str:
     """
-    Search your LinkedIn network CSV by name, job title, company, or keywords.
-    Data is loaded from your local CSV file.
+    Search your LinkedIn network by name, job title, company, or keywords.
+    This searches the live database.
     
     Examples:
     - search_network("AI", limit=20)
     - search_network("Google")
     - search_network("founder")
     """
-    df = load_csv_data()
-    
-    # Search across multiple columns
-    mask = (
-        df['full_name'].str.contains(query, case=False, na=False) |
-        df['headline'].str.contains(query, case=False, na=False) |
-        df['about'].str.contains(query, case=False, na=False) |
-        df['current_company'].str.contains(query, case=False, na=False) |
-        df['keywords'].str.contains(query, case=False, na=False) |
-        df['skills'].str.contains(query, case=False, na=False)
-    )
-    
-    results = df[mask].head(limit)
-    
-    if results.empty:
-        return json.dumps({"message": f"No results found for: {query}"}, indent=2)
-    
-    # Convert to dict and format
-    return results.to_json(orient='records', indent=2)
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        user_id = await get_user_id()
+        
+        results = await conn.fetch(
+            """
+            SELECT 
+                full_name, email, linkedin_url, headline, about,
+                current_company, skills, keywords
+            FROM people
+            WHERE user_id = $1
+              AND (
+                  full_name ILIKE $2 
+                  OR headline ILIKE $2 
+                  OR about ILIKE $2
+                  OR current_company ILIKE $2
+                  OR keywords::text ILIKE $2
+                  OR skills::text ILIKE $2
+              )
+            LIMIT $3
+            """,
+            user_id, f"%{query}%", limit
+        )
+        
+        await conn.close()
+        
+        if not results:
+            return json.dumps({"message": f"No results found for: {query}"}, indent=2)
+        
+        return json.dumps([dict(r) for r in results], indent=2, default=str)
+        
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 @mcp.tool()
 async def get_profile(name: str) -> str:
     """
-    Get detailed profile for a specific person from CSV.
+    Get detailed profile for a specific person from your network.
     
     Example:
     - get_profile("Chen Katz")
     """
-    df = load_csv_data()
-    
-    mask = df['full_name'].str.contains(name, case=False, na=False)
-    result = df[mask].head(1)
-    
-    if result.empty:
-        return json.dumps({"error": f"No profile found for: {name}"}, indent=2)
-    
-    return result.to_json(orient='records', indent=2)
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        user_id = await get_user_id()
+        
+        result = await conn.fetchrow(
+            """
+            SELECT * FROM people 
+            WHERE user_id = $1 AND full_name ILIKE $2 
+            LIMIT 1
+            """,
+            user_id, f"%{name}%"
+        )
+        
+        await conn.close()
+        
+        if not result:
+            return json.dumps({"error": f"No profile found for: {name}"}, indent=2)
+        
+        return json.dumps(dict(result), indent=2, default=str)
+        
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 @mcp.tool()
 async def filter_by_keywords(keywords: List[str], limit: int = 20) -> str:
     """
-    Filter network by keywords from CSV.
+    Filter network by keywords.
     
     Example:
     - filter_by_keywords(["ai", "founder"], limit=20)
     """
-    df = load_csv_data()
-    
-    # Create mask for any keyword match
-    mask = pd.Series([False] * len(df))
-    for keyword in keywords:
-        mask |= df['keywords'].str.contains(keyword, case=False, na=False)
-    
-    results = df[mask].head(limit)
-    
-    if results.empty:
-        return json.dumps({"message": f"No results found for keywords: {keywords}"}, indent=2)
-    
-    return results.to_json(orient='records', indent=2)
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        user_id = await get_user_id()
+        
+        keyword_conditions = " OR ".join([f"keywords::text ILIKE '%{kw}%'" for kw in keywords])
+        
+        results = await conn.fetch(f"""
+            SELECT 
+                full_name, email, linkedin_url, headline, about,
+                current_company, skills, keywords
+            FROM people
+            WHERE user_id = $1 AND ({keyword_conditions})
+            LIMIT $2
+        """, user_id, limit)
+        
+        await conn.close()
+        
+        if not results:
+            return json.dumps({"message": f"No results found for keywords: {keywords}"}, indent=2)
+        
+        return json.dumps([dict(r) for r in results], indent=2, default=str)
+        
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 @mcp.tool()
 async def analyze_network() -> str:
     """
-    Get statistics and insights about your LinkedIn network from CSV.
+    Get statistics and insights about your LinkedIn network.
     """
-    df = load_csv_data()
-    
-    stats = {
-        "overview": {
-            "total_connections": int(len(df)),
-            "unique_companies": int(df['current_company'].nunique()),
-            "has_email": int(df['email'].notna().sum()),
-            "has_linkedin_url": int(df['linkedin_url'].notna().sum())
-        }
-    }
-    
-    # Top companies
-    top_companies = df['current_company'].value_counts().head(10)
-    stats['top_companies'] = [
-        {"company": company, "count": int(count)} 
-        for company, count in top_companies.items()
-    ]
-    
-    # Parse keywords if JSON
     try:
-        all_keywords = []
-        for kw_str in df['keywords'].dropna():
-            try:
-                kw_list = json.loads(kw_str)
-                if isinstance(kw_list, list):
-                    all_keywords.extend([k for k in kw_list if k and str(k).strip().lower() != 'null'])
-            except:
-                pass
+        conn = await asyncpg.connect(DATABASE_URL)
+        user_id = await get_user_id()
         
-        from collections import Counter
-        keyword_counts = Counter(all_keywords)
-        stats['top_keywords'] = [
-            {"keyword": kw, "count": count}
-            for kw, count in keyword_counts.most_common(10)
-        ]
+        # Basic stats
+        stats = await conn.fetchrow(
+            """
+            SELECT 
+                COUNT(*) as total_connections, 
+                COUNT(DISTINCT current_company) as unique_companies,
+                COUNT(CASE WHEN email IS NOT NULL THEN 1 END) as has_email
+            FROM people 
+            WHERE user_id = $1
+            """,
+            user_id
+        )
+        
+        # Top companies
+        top_companies = await conn.fetch(
+            """
+            SELECT current_company, COUNT(*) as count
+            FROM people
+            WHERE user_id = $1 AND current_company IS NOT NULL AND current_company != ''
+            GROUP BY current_company
+            ORDER BY count DESC
+            LIMIT 10
+            """,
+            user_id
+        )
+        
+        # Top keywords
+        try:
+            top_keywords = await conn.fetch(
+                """
+                SELECT trim(both ' "' from keyword) as keyword, COUNT(*) as count
+                FROM (
+                    SELECT jsonb_array_elements_text(keywords::jsonb) as keyword
+                    FROM people
+                    WHERE user_id = $1 
+                      AND keywords IS NOT NULL 
+                      AND keywords != ''
+                      AND keywords != '[]'
+                ) AS keywords_unnested
+                WHERE keyword IS NOT NULL 
+                  AND trim(keyword) != '' 
+                  AND trim(keyword) != 'null'
+                GROUP BY keyword
+                ORDER BY count DESC
+                LIMIT 10
+                """,
+                user_id
+            )
+        except:
+            top_keywords = []
+        
+        await conn.close()
+        
+        analysis = {
+            "overview": dict(stats),
+            "top_keywords": [dict(r) for r in top_keywords],
+            "top_companies": [dict(r) for r in top_companies]
+        }
+        
+        return json.dumps(analysis, indent=2, default=str)
+        
     except Exception as e:
-        stats['top_keywords'] = []
-    
-    return json.dumps(stats, indent=2)
+        return json.dumps({"error": str(e)}, indent=2)
 
 @mcp.tool()
 async def export_network_table(limit: int = 50) -> str:
     """
-    Export network as markdown table from CSV for easy viewing in Cursor.
+    Export network as markdown table for easy viewing.
     
     Args:
         limit: Maximum number of contacts to display (default: 50)
     """
-    df = load_csv_data()
-    
-    # Select and format columns
-    display_df = df[['full_name', 'email', 'linkedin_url', 'current_company', 'headline']].head(limit)
-    
-    # Clean up data for display
-    display_df = display_df.fillna('')
-    
-    # Truncate long fields
-    display_df['headline'] = display_df['headline'].str[:50]
-    display_df['current_company'] = display_df['current_company'].str[:40]
-    
-    # Convert to markdown table
-    return display_df.to_markdown(index=False)
-
-@mcp.tool()
-async def refresh_csv() -> str:
-    """
-    Re-download and refresh the CSV from the database.
-    Use this if you want to sync latest data from LinkedIn.
-    """
-    global _exported
-    _exported = False
-    
-    if CSV_FILE.exists():
-        CSV_FILE.unlink()
-        print(f"🗑️ Deleted old CSV at: {CSV_FILE}")
-    
-    await auto_export_to_csv()
-    
-    if CSV_FILE.exists():
-        df = load_csv_data()
-        return json.dumps({
-            "status": "success",
-            "message": f"CSV refreshed with {len(df)} contacts",
-            "location": str(CSV_FILE)
-        }, indent=2)
-    else:
-        return json.dumps({
-            "status": "error",
-            "message": "Failed to refresh CSV"
-        }, indent=2)
-
-@mcp.tool()
-async def get_csv_location() -> str:
-    """
-    Get the path to your local LinkedIn network CSV file.
-    """
-    exists = CSV_FILE.exists()
-    size_mb = round(CSV_FILE.stat().st_size / 1024 / 1024, 2) if exists else 0
-    
-    return json.dumps({
-        "csv_path": str(CSV_FILE),
-        "exists": exists,
-        "size_mb": size_mb,
-        "row_count": len(load_csv_data()) if exists else 0
-    }, indent=2)
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        user_id = await get_user_id()
+        
+        results = await conn.fetch(
+            """
+            SELECT 
+                full_name, email, linkedin_url, current_company, headline
+            FROM people
+            WHERE user_id = $1
+            ORDER BY full_name
+            LIMIT $2
+            """,
+            user_id, limit
+        )
+        
+        await conn.close()
+        
+        if not results:
+            return "No data found."
+        
+        # Convert to pandas for table formatting
+        df = pd.DataFrame([dict(r) for r in results])
+        
+        # Truncate long fields
+        df['headline'] = df['headline'].fillna('').str[:50]
+        df['current_company'] = df['current_company'].fillna('').str[:40]
+        df['email'] = df['email'].fillna('')
+        df['linkedin_url'] = df['linkedin_url'].fillna('')
+        
+        return df.to_markdown(index=False)
+        
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 # -------------------------------------------------------------------
 # Deployment
@@ -333,28 +390,40 @@ if __name__ == "__main__":
         )
 
         class HeaderToContextMiddleware:
-            def __init__(self, app): self.app = app
+            def __init__(self, app): 
+                self.app = app
+            
             async def __call__(self, scope, receive, send):
-                if scope["type"] in ("http","websocket"):
-                    headers = {k.decode().lower(): v.decode() for k,v in scope.get("headers",[])}
-                    api_key = headers.get("api_key") or headers.get("x-api-key") or headers.get("api-key") or headers.get("authorization")
+                if scope["type"] in ("http", "websocket"):
+                    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+                    api_key = (
+                        headers.get("api_key") or 
+                        headers.get("x-api-key") or 
+                        headers.get("api-key") or 
+                        headers.get("authorization")
+                    )
                     if api_key and api_key.lower().startswith("bearer "):
-                        api_key = api_key.split(" ",1)[1].strip()
+                        api_key = api_key.split(" ", 1)[1].strip()
                     token = current_api_key.set(api_key)
-                    try: await self.app(scope, receive, send)
-                    finally: current_api_key.reset(token)
-                else: await self.app(scope, receive, send)
+                    try: 
+                        await self.app(scope, receive, send)
+                    finally: 
+                        current_api_key.reset(token)
+                else: 
+                    await self.app(scope, receive, send)
 
         wrapped_sse_app = HeaderToContextMiddleware(sse_app)
 
         fastapi_root = FastAPI()
+        
         @fastapi_root.get("/")
-        async def health(): return {"status":"ok","service":"LinkedIn Network MCP (CSV Mode)"}
+        async def health(): 
+            return {"status": "ok", "service": "LinkedIn Network MCP (CSV Mode)"}
+        
         fastapi_root.mount("/", wrapped_sse_app)
 
         uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
     else:
         # STDIO mode for Cursor
         print("🔧 Starting MCP server in STDIO mode (for Cursor)")
-        print("💡 Use the 'initialize' tool first to download your network to CSV")
         mcp.run()
