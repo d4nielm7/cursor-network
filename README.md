@@ -2,26 +2,6 @@
 
 Super simple MCP server to connect your LinkedIn network data in Neon to Cursor.
 
-## 🚀 Quick Start
-
-### How to Run
-
-To run the `server.py` script, execute the following command in your terminal:
-
-```bash
-python server.py
-```
-
-### How to Test
-
-To test the database connection, execute the following command in your terminal:
-
-```bash
-python test_mcp.py
-```
-
-For more detailed setup instructions, see the [Step-by-Step Setup](#-step-by-step-setup) section below.
-
 ## 🎯 What This Does
 
 Your n8n workflow scrapes LinkedIn → stores in Neon → MCP server exposes it → Cursor can query it naturally!
