@@ -86,7 +86,15 @@ async def export_network_to_csv() -> str:
         # Create CSV in memory
         import io
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=people[0].keys())
+        
+        # Get all unique keys across all rows to handle dynamic fields
+        all_keys = set()
+        for person in people:
+            all_keys.update(person.keys())
+        
+        # Convert to sorted list for consistent column order
+        fieldnames = sorted(list(all_keys))
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
         writer.writeheader()
         
         for person in people:
