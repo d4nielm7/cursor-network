@@ -9,11 +9,15 @@ from fastmcp.server.http import create_sse_app
 import asyncpg
 import os
 import json
+import csv
+import io
+import base64
 from typing import List
 from dotenv import load_dotenv
 from contextvars import ContextVar
 from fastapi import FastAPI
 import uvicorn
+import re
 
 # Load environment variables from .env file (override=False means existing env vars take precedence)
 load_dotenv(override=False)
@@ -299,7 +303,6 @@ def extract_search_keywords(query: str) -> List[str]:
     - "founders and investors" -> ["founder", "investor"]
     - "people with marketing or sales skills" -> ["marketing", "sales"]
     """
-    import re
     query_lower = query.lower()
     
     # Common patterns to extract keywords
@@ -486,6 +489,102 @@ async def export_network_table(limit: int = 50) -> str:
     except Exception as e:
         # If database error occurs, return error - NEVER create fake table
         return f"Error accessing database: {str(e)}. Cannot generate table without real data."
+
+@mcp.tool()
+async def export_network_csv() -> str:
+    """
+    Export your entire LinkedIn network to a CSV file.
+    
+    IMPORTANT: Use this when the user wants to download or export their network.
+    
+    Examples of when to use:
+    - "export my network to CSV" -> export_network_csv()
+    - "download my network" -> export_network_csv()
+    - "get my network as CSV" -> export_network_csv()
+    - "save my contacts to a file" -> export_network_csv()
+    - "export all my contacts" -> export_network_csv()
+    
+    Returns:
+        CSV content as base64 string that can be saved to the user's computer.
+        The CSV maintains the exact same format as the PostgreSQL database.
+    """
+    try:
+        user_id = await get_user_id()
+        pool = await get_db()
+        
+        # Get ALL data from PostgreSQL - same format as your database
+        async with pool.acquire() as conn:
+            results = await conn.fetch(
+                """
+                SELECT 
+                    full_name, email, linkedin_url, headline, about,
+                    current_company, current_company_linkedin_url,
+                    current_company_website_url, current_company_detail,
+                    experiences, skills, education, keywords
+                FROM people
+                WHERE user_id = $1
+                ORDER BY full_name
+                """,
+                user_id
+            )
+            
+            if not results or len(results) == 0:
+                return json.dumps({
+                    "status": "error",
+                    "message": "No data found in your network."
+                }, indent=2)
+            
+            # Define exact fieldnames from database
+            fieldnames = [
+                'full_name', 'email', 'linkedin_url', 'headline', 'about',
+                'current_company', 'current_company_linkedin_url',
+                'current_company_website_url', 'current_company_detail',
+                'experiences', 'skills', 'education', 'keywords'
+            ]
+            
+            # Create CSV in memory
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            
+            for person in results:
+                # Convert to dict with exact database format
+                row = {}
+                for field in fieldnames:
+                    value = person.get(field)
+                    
+                    # Keep JSON fields as JSON strings (same as PostgreSQL format)
+                    if field in ['experiences', 'skills', 'education', 'keywords']:
+                        if value:
+                            row[field] = json.dumps(value, default=str)
+                        else:
+                            row[field] = ''
+                    else:
+                        row[field] = value if value is not None else ''
+                
+                writer.writerow(row)
+            
+            # Get CSV content
+            csv_content = output.getvalue()
+            csv_bytes = csv_content.encode('utf-8')
+            
+            # Encode as base64
+            encoded = base64.b64encode(csv_bytes).decode('utf-8')
+            
+            return json.dumps({
+                "status": "success",
+                "filename": "linkedin_network_export.csv",
+                "row_count": len(results),
+                "size_kb": round(len(csv_bytes) / 1024, 2),
+                "csv_base64": encoded,
+                "message": f"Successfully exported {len(results)} contacts from your network"
+            }, indent=2)
+            
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "message": f"Export failed: {str(e)}"
+        }, indent=2)
 
 
 # -------------------------------------------------------------------
