@@ -9,16 +9,11 @@ from fastmcp.server.http import create_sse_app
 import asyncpg
 import os
 import json
-import csv
-import io
-import base64
 from typing import List
 from dotenv import load_dotenv
 from contextvars import ContextVar
-from fastapi import FastAPI, Response
-from fastapi.responses import FileResponse
+from fastapi import FastAPI
 import uvicorn
-import re
 
 # Load environment variables from .env file (override=False means existing env vars take precedence)
 load_dotenv(override=False)
@@ -304,6 +299,7 @@ def extract_search_keywords(query: str) -> List[str]:
     - "founders and investors" -> ["founder", "investor"]
     - "people with marketing or sales skills" -> ["marketing", "sales"]
     """
+    import re
     query_lower = query.lower()
     
     # Common patterns to extract keywords
@@ -491,110 +487,6 @@ async def export_network_table(limit: int = 50) -> str:
         # If database error occurs, return error - NEVER create fake table
         return f"Error accessing database: {str(e)}. Cannot generate table without real data."
 
-@mcp.tool()
-async def export_network_csv() -> str:
-    """
-    Export your entire LinkedIn network to a CSV file.
-    
-    IMPORTANT: Use this when the user wants to download or export their network.
-    
-    Examples of when to use:
-    - "export my network to CSV" -> export_network_csv()
-    - "download my network" -> export_network_csv()
-    - "get my network as CSV" -> export_network_csv()
-    - "save my contacts to a file" -> export_network_csv()
-    - "export all my contacts" -> export_network_csv()
-    
-    Returns:
-        CSV content as base64 string that can be saved to the user's computer.
-        The CSV maintains the exact same format as the PostgreSQL database.
-    """
-    try:
-        user_id = await get_user_id()
-        pool = await get_db()
-        
-        # Get ALL data from PostgreSQL - same format as your database
-        async with pool.acquire() as conn:
-            results = await conn.fetch(
-                """
-                SELECT 
-                    full_name, email, linkedin_url, headline, about,
-                    current_company, current_company_linkedin_url,
-                    current_company_website_url, current_company_detail,
-                    experiences, skills, education, keywords
-                FROM people
-                WHERE user_id = $1
-                ORDER BY full_name
-                """,
-                user_id
-            )
-            
-            if not results or len(results) == 0:
-                return json.dumps({
-                    "status": "error",
-                    "message": "No data found in your network."
-                }, indent=2)
-            
-            # Define exact fieldnames from database
-            fieldnames = [
-                'full_name', 'email', 'linkedin_url', 'headline', 'about',
-                'current_company', 'current_company_linkedin_url',
-                'current_company_website_url', 'current_company_detail',
-                'experiences', 'skills', 'education', 'keywords'
-            ]
-            
-            # Create CSV in memory
-            output = io.StringIO()
-            writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            
-            for person in results:
-                # Convert to dict with exact database format
-                row = {}
-                for field in fieldnames:
-                    value = person.get(field)
-                    
-                    # Keep JSON fields as JSON strings (same as PostgreSQL format)
-                    if field in ['experiences', 'skills', 'education', 'keywords']:
-                        if value:
-                            row[field] = json.dumps(value, default=str)
-                        else:
-                            row[field] = ''
-                    else:
-                        row[field] = value if value is not None else ''
-                
-                writer.writerow(row)
-            
-            # Get CSV content
-            csv_content = output.getvalue()
-            csv_bytes = csv_content.encode('utf-8')
-            
-            # Save CSV file to disk automatically
-            filename = "linkedin_network_export.csv"
-            filepath = os.path.join(os.getcwd(), filename)
-            
-            with open(filepath, 'wb') as f:
-                f.write(csv_bytes)
-            
-            # Encode as base64 (for compatibility with existing code that might expect it)
-            encoded = base64.b64encode(csv_bytes).decode('utf-8')
-            
-            return json.dumps({
-                "status": "success",
-                "filename": filename,
-                "filepath": filepath,
-                "row_count": len(results),
-                "size_kb": round(len(csv_bytes) / 1024, 2),
-                "csv_base64": encoded,
-                "message": f"Successfully exported {len(results)} contacts to {filepath}"
-            }, indent=2)
-            
-    except Exception as e:
-        return json.dumps({
-            "status": "error",
-            "message": f"Export failed: {str(e)}"
-        }, indent=2)
-
 
 # -------------------------------------------------------------------
 # Deployment
@@ -628,46 +520,8 @@ if __name__ == "__main__":
         wrapped_sse_app = HeaderToContextMiddleware(sse_app)
 
         fastapi_root = FastAPI()
-        
         @fastapi_root.get("/")
-        async def health(): 
-            return {"status":"ok","service":"LinkedIn Network MCP"}
-        
-        @fastapi_root.get("/download/csv")
-        async def download_csv():
-            """Download the exported CSV file"""
-            try:
-                # Validate API key (export_network_csv will also call get_user_id internally)
-                await get_user_id()
-                filename = "linkedin_network_export.csv"
-                filepath = os.path.join(os.getcwd(), filename)
-                
-                # Check if file exists
-                if not os.path.exists(filepath):
-                    # Generate it if it doesn't exist
-                    result_json = await export_network_csv()
-                    result = json.loads(result_json)
-                    if result.get("status") != "success":
-                        return Response(
-                            content=json.dumps({"error": "Failed to generate CSV"}),
-                            status_code=500,
-                            media_type="application/json"
-                        )
-                
-                # Return the file
-                return FileResponse(
-                    filepath,
-                    filename=filename,
-                    media_type="text/csv",
-                    headers={"Content-Disposition": f"attachment; filename={filename}"}
-                )
-            except Exception as e:
-                return Response(
-                    content=json.dumps({"error": str(e)}),
-                    status_code=500,
-                    media_type="application/json"
-                )
-        
+        async def health(): return {"status":"ok","service":"LinkedIn Network MCP"}
         fastapi_root.mount("/", wrapped_sse_app)
 
         uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
