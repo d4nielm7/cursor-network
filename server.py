@@ -142,7 +142,7 @@ async def get_profile(name: str) -> str:
 async def filter_by_keywords(keywords: List[str]) -> str:
     """
     Filter your LinkedIn network contacts by specific keywords found in their profiles.
-    
+
     IMPORTANT: This searches REAL keyword data from your LinkedIn network database.
     Use this when the user wants to find people with specific expertise, roles, or interests.
     Returns ALL matching results with no limit.
@@ -214,23 +214,18 @@ async def analyze_network() -> str:
 @mcp.tool()
 async def export_network_csv() -> str:
     """
-    Export your LinkedIn network contacts as a CSV file.
-    
+    Export your LinkedIn network contacts as a real CSV file saved to disk.
+
     IMPORTANT: This exports REAL data from your LinkedIn network database.
-    Returns ALL contacts with no limit.
-    
-    Examples of when to use:
-    - "export my network to CSV" -> export_network_csv()
-    - "download my contacts as CSV" -> export_network_csv()
-    - "export CSV" -> export_network_csv()
-    
+    It saves to 'data/network.csv' (creating the directory if needed).
+
     Returns:
-        JSON string with status, csv_base64 (base64-encoded CSV), row_count, and size_kb
+        JSON string with status, path, row_count, and size_kb
     """
     try:
         user_id = await get_user_id()
         pool = await get_db()
-        
+
         async with pool.acquire() as conn:
             results = await conn.fetch(
                 """
@@ -253,81 +248,73 @@ async def export_network_csv() -> str:
                 """,
                 user_id
             )
-            
-            if not results or len(results) == 0:
+
+            if not results:
                 return json.dumps({
                     "status": "error",
                     "message": "No data found in your network."
                 })
-            
-            # Create CSV in memory
-            output = io.StringIO()
-            writer = csv.writer(output)
-            
-            # Write header
-            writer.writerow([
-                "Full Name",
-                "Email",
-                "LinkedIn URL",
-                "Headline",
-                "About",
-                "Current Company",
-                "Current Company LinkedIn URL",
-                "Current Company Website URL",
-                "Experiences",
-                "Skills",
-                "Education",
-                "Keywords"
-            ])
-            
-            # Write data rows
-            for row in results:
-                # Helper function to format complex fields
-                def format_field(value):
-                    if value is None:
-                        return ""
-                    if isinstance(value, (list, dict)):
-                        return json.dumps(value, default=str)
-                    return str(value)
-                
+
+            # Ensure data directory exists
+            os.makedirs("data", exist_ok=True)
+            file_path = os.path.join("data", "network.csv")
+
+            # Write CSV directly to disk
+            with open(file_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
                 writer.writerow([
-                    format_field(row.get('full_name')),
-                    format_field(row.get('email')),
-                    format_field(row.get('linkedin_url')),
-                    format_field(row.get('headline')),
-                    format_field(row.get('about')),
-                    format_field(row.get('current_company')),
-                    format_field(row.get('current_company_linkedin_url')),
-                    format_field(row.get('current_company_website_url')),
-                    format_field(row.get('experiences')),
-                    format_field(row.get('skills')),
-                    format_field(row.get('education')),
-                    format_field(row.get('keywords'))
+                    "Full Name",
+                    "Email",
+                    "LinkedIn URL",
+                    "Headline",
+                    "About",
+                    "Current Company",
+                    "Current Company LinkedIn URL",
+                    "Current Company Website URL",
+                    "Experiences",
+                    "Skills",
+                    "Education",
+                    "Keywords"
                 ])
-            
-            csv_string = output.getvalue()
-            output.close()
-            
-            # Encode to base64
-            csv_bytes = csv_string.encode('utf-8')
-            csv_base64 = base64.b64encode(csv_bytes).decode('utf-8')
-            
+
+                def fmt(v):
+                    if v is None:
+                        return ""
+                    if isinstance(v, (list, dict)):
+                        return json.dumps(v, default=str)
+                    return str(v)
+
+                for row in results:
+                    writer.writerow([
+                        fmt(row.get('full_name')),
+                        fmt(row.get('email')),
+                        fmt(row.get('linkedin_url')),
+                        fmt(row.get('headline')),
+                        fmt(row.get('about')),
+                        fmt(row.get('current_company')),
+                        fmt(row.get('current_company_linkedin_url')),
+                        fmt(row.get('current_company_website_url')),
+                        fmt(row.get('experiences')),
+                        fmt(row.get('skills')),
+                        fmt(row.get('education')),
+                        fmt(row.get('keywords')),
+                    ])
+
+            size_kb = os.path.getsize(file_path) / 1024
             row_count = len(results)
-            size_kb = len(csv_bytes) / 1024
-            
+
             return json.dumps({
                 "status": "success",
-                "csv_base64": csv_base64,
+                "path": file_path,
                 "row_count": row_count,
                 "size_kb": round(size_kb, 2)
             })
-            
+
     except Exception as e:
         return json.dumps({
             "status": "error",
             "message": f"Error exporting CSV: {str(e)}"
         })
-
 
 # -------------------------------------------------------------------
 # Deployment
