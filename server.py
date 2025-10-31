@@ -1,9 +1,9 @@
 """
-LinkedIn Network MCP Server
+LinkedIn Network MCP Server (Smarter Version)
 Hosted on Railway - connects to Neon Postgres
-Users only need their API_KEY, DATABASE_URL is configured on Railway
+Users only need their API_KEY; DATABASE_URL is configured on Railway
 """
-#.venv\Scripts\activate   
+
 from fastmcp import FastMCP
 from fastmcp.server.http import create_sse_app
 import asyncpg
@@ -15,25 +15,22 @@ from typing import List
 from dotenv import load_dotenv
 from contextvars import ContextVar
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
 import uvicorn
 
-# Load environment variables from .env file (override=False means existing env vars take precedence)
+# ---------------------------
+# Environment and setup
+# ---------------------------
 load_dotenv(override=False)
-
-# Create MCP server
 mcp = FastMCP("LinkedIn Network")
 
-# Per-request API key storage
 current_api_key: ContextVar[str | None] = ContextVar("current_api_key", default=None)
 
-# DATABASE_URL
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise Exception("DATABASE_URL must be set in .env file (local) or Railway environment variables")
+    raise Exception("DATABASE_URL must be set (Railway or .env)")
 
-# API_KEY (fallback for local/STDIO only)
 API_KEY = os.getenv("API_KEY")
+APP_URL = os.getenv("APP_URL") or "https://web-production-e31ba.up.railway.app"
 
 db_pool = None
 
@@ -47,299 +44,153 @@ async def get_user_id():
     header_key = current_api_key.get()
     user_id = header_key or os.getenv("API_KEY") or API_KEY
     if not user_id:
-        raise Exception("API_KEY not set. Provide it via 'API_KEY'/'X-API-Key' header or env.")
+        raise Exception("API_KEY missing. Provide via 'X-API-Key' header or env.")
     return user_id
 
-# -------------------------------------------------------------------
-# TOOLS - LinkedIn Network Query Tools
-# -------------------------------------------------------------------
-# IMPORTANT FOR AI ASSISTANT:
-# These tools access REAL LinkedIn network data from a PostgreSQL database.
-# Never make up or hallucinate network data - always use these tools to retrieve actual information.
-# When user mentions "network", "connections", "contacts", "LinkedIn", search/filter/profile tools should be used.
-# When user mentions specific topics like "AI", "founder", extract keywords and search the actual network.
-# -------------------------------------------------------------------
+# ---------------------------
+# Helper utilities
+# ---------------------------
+
+def shell_cmd(cmd: str) -> str:
+    """Formats a command-line example block."""
+    return f"```bash\n{cmd}\n```"
+
+def py_cmd(code: str) -> str:
+    """Formats a Python example block."""
+    return f"```python\n{code}\n```"
+
+# ---------------------------
+# Tools
+# ---------------------------
 
 @mcp.tool()
-async def search_network(query: str) -> str:
+async def export_network_csv() -> str:
     """
-    Search your actual LinkedIn network contacts by name, job title, company, skills, or keywords.
-    
-    IMPORTANT: This searches REAL data from your LinkedIn network stored in the database. 
-    Always use this when the user asks about people, contacts, or network connections.
-    Returns ALL matching results with no limit.
-    
-    Examples of when to use:
-    - "find AI people in my network" -> search_network("AI")
-    - "who works at Google?" -> search_network("Google")
-    - "show me founders" -> search_network("founder")
-    - "people with marketing skills" -> search_network("marketing")
-    - "search for Chen Katz" -> search_network("Chen Katz")
-    
-    Args:
-        query: Search term (name, title, company, experience, skill, keyword - will match across all fields)
-    
-    Returns:
-        JSON string with ALL matching profiles from your actual LinkedIn network
-    """
-    user_id = await get_user_id()
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        results = await conn.fetch(
-            """
-            SELECT 
-                full_name, email, linkedin_url, headline, about,
-                current_company, current_company_linkedin_url,
-                current_company_website_url, current_company_detail,
-                experiences, skills, education, keywords
-            FROM people
-            WHERE user_id = $1
-              AND (
-                  full_name ILIKE $2 
-                  OR headline ILIKE $2 
-                  OR about ILIKE $2
-                  OR current_company ILIKE $2
-                  OR keywords::text ILIKE $2
-                  OR skills::text ILIKE $2
-                  OR experiences::text ILIKE $2
-              )
-            """,
-            user_id, f"%{query}%"
-        )
-        return json.dumps([dict(r) for r in results], indent=2, default=str)
+    Export LinkedIn network to a local CSV file or provide a ready-to-run download command.
 
-@mcp.tool()
-async def get_profile(name: str) -> str:
-    """
-    Get detailed profile information for a specific person in your LinkedIn network.
-    
-    IMPORTANT: This retrieves REAL profile data from your LinkedIn network database.
-    Use this when the user asks about a specific person by name or wants detailed info about someone.
-    
-    Examples of when to use:
-    - "tell me about Chen Katz" -> get_profile("Chen Katz")
-    - "what's Esther's background?" -> get_profile("Esther")
-    - "show me details on Omer Har" -> get_profile("Omer Har")
-    
-    Args:
-        name: Person's full name or partial name (e.g., "Chen Katz" or just "Chen")
-    
-    Returns:
-        JSON string with full profile data including headline, company, experience, skills, etc.
-    """
-    user_id = await get_user_id()
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        result = await conn.fetchrow(
-            "SELECT * FROM people WHERE user_id = $1 AND full_name ILIKE $2 LIMIT 1",
-            user_id, f"%{name}%"
-        )
-        if result:
-            return json.dumps(dict(result), indent=2, default=str)
-        return json.dumps({"error": f"No profile found for: {name}"})
-
-@mcp.tool()
-async def filter_by_keywords(keywords: List[str]) -> str:
-    """
-    Filter your LinkedIn network contacts by specific keywords found in their profiles.
-
-    IMPORTANT: This searches REAL keyword data from your LinkedIn network database.
-    Use this when the user wants to find people with specific expertise, roles, or interests.
-    Returns ALL matching results with no limit.
-    
-    Examples of when to use:
-    - "find people with AI experience" -> filter_by_keywords(["ai"])
-    - "show me founders and investors" -> filter_by_keywords(["founder", "investor"])
-    - "people in marketing and sales" -> filter_by_keywords(["marketing", "sales"])
-    - "who has saas or cloud skills?" -> filter_by_keywords(["saas", "cloud"])
-    
-    Args:
-        keywords: List of keyword strings to match (e.g., ["ai", "founder", "saas"])
-    
-    Returns:
-        JSON string with ALL matching profiles that contain the specified keywords
-    """
-    user_id = await get_user_id()
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        keyword_conditions = " OR ".join([f"keywords::text ILIKE '%{kw}%'" for kw in keywords])
-        results = await conn.fetch(f"""
-            SELECT 
-                full_name, email, linkedin_url, headline, about,
-                current_company, current_company_linkedin_url,
-                current_company_website_url, current_company_detail,
-                experiences, skills, education, keywords
-            FROM people
-            WHERE user_id = $1 AND ({keyword_conditions})
-        """, user_id)
-        return json.dumps([dict(r) for r in results], indent=2, default=str)
-
-@mcp.tool()
-async def analyze_network() -> str:
-    """
-    Get all contacts from your LinkedIn network with essential information.
-    
-    IMPORTANT: This returns REAL data from your LinkedIn network stored in the database.
-    Use this when the user asks about their network, wants to see all contacts, or analyze their network.
-    Returns ALL contacts with no limit - name, email, linkedin, current company, and skills.
-    
-    Examples of when to use:
-    - "analyze my network" -> analyze_network()
-    - "what's in my LinkedIn network?" -> analyze_network()
-    - "show me my network" -> analyze_network()
-    - "list all my connections" -> analyze_network()
-    
-    Returns:
-        JSON array with ALL contacts including: full_name, email, linkedin_url, current_company, skills
-    """
-    user_id = await get_user_id()
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        results = await conn.fetch(
-            """
-            SELECT 
-                full_name, 
-                email, 
-                linkedin_url, 
-                current_company, 
-                skills
-            FROM people
-            WHERE user_id = $1
-            ORDER BY full_name
-            """,
-            user_id
-        )
-        return json.dumps([dict(r) for r in results], indent=2, default=str)
-
-@mcp.tool()
-async def export_network_csv(output_path: str | None = None) -> str:
-    """
-    Export your LinkedIn network contacts as a real CSV file saved to disk.
-
-    IMPORTANT: This exports REAL data from your LinkedIn network database.
-    It saves to 'data/network.csv' (creating the directory if needed).
-
-    Returns:
-        JSON string with status, path, row_count, and size_kb
+    When running locally → saves to ./data/network.csv  
+    When on Railway → gives a curl command and a Python snippet to download the CSV.
     """
     try:
         user_id = await get_user_id()
         pool = await get_db()
 
-        # Resolve output path relative to WORKING_DIR (if provided)
-        base_dir = os.getenv("WORKING_DIR") or os.getcwd()
-
-        if output_path:
-            if os.path.isabs(output_path):
-                file_path = output_path
-            else:
-                file_path = os.path.join(base_dir, output_path)
-        else:
-            # Default relative path; on HTTP deployments, separate per-user to avoid collisions
-            default_rel = os.path.join("data", str(user_id), "network.csv") if os.getenv("PORT") else os.path.join("data", "network.csv")
-            file_path = os.path.join(base_dir, default_rel)
-        file_path = os.path.abspath(file_path)
-
-        # Ensure data directory exists
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-        # Stream rows from Postgres cursor directly to disk (no base64, no full fetch)
         async with pool.acquire() as conn:
-            query = """
+            results = await conn.fetch(
+                """
                 SELECT 
-                    full_name, 
-                    email, 
-                    linkedin_url, 
-                    headline,
-                    about,
-                    current_company,
-                    current_company_linkedin_url,
-                    current_company_website_url,
-                    experiences,
-                    skills,
-                    education,
-                    keywords
+                    full_name, email, linkedin_url, headline, about,
+                    current_company, current_company_linkedin_url,
+                    current_company_website_url, experiences, skills, education, keywords
                 FROM people
                 WHERE user_id = $1
                 ORDER BY full_name
-            """
+                """,
+                user_id
+            )
+
+        if not results:
+            return json.dumps({
+                "status": "error",
+                "message": "No contacts found in your LinkedIn network."
+            })
+
+        # Local export (for dev or Cursor STDIO mode)
+        os.makedirs("data", exist_ok=True)
+        file_path = "data/network.csv"
+
+        with open(file_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "Full Name","Email","LinkedIn URL","Headline","About",
+                "Current Company","Current Company LinkedIn URL","Current Company Website URL",
+                "Experiences","Skills","Education","Keywords"
+            ])
 
             def fmt(v):
                 if v is None:
                     return ""
                 if isinstance(v, (list, dict)):
-                    return json.dumps(v, default=str)
+                    return json.dumps(v, ensure_ascii=False)
                 return str(v)
 
-            row_count = 0
-            with open(file_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
+            for row in results:
                 writer.writerow([
-                    "Full Name",
-                    "Email",
-                    "LinkedIn URL",
-                    "Headline",
-                    "About",
-                    "Current Company",
-                    "Current Company LinkedIn URL",
-                    "Current Company Website URL",
-                    "Experiences",
-                    "Skills",
-                    "Education",
-                    "Keywords",
+                    fmt(row.get("full_name")),
+                    fmt(row.get("email")),
+                    fmt(row.get("linkedin_url")),
+                    fmt(row.get("headline")),
+                    fmt(row.get("about")),
+                    fmt(row.get("current_company")),
+                    fmt(row.get("current_company_linkedin_url")),
+                    fmt(row.get("current_company_website_url")),
+                    fmt(row.get("experiences")),
+                    fmt(row.get("skills")),
+                    fmt(row.get("education")),
+                    fmt(row.get("keywords")),
                 ])
 
-                async for row in conn.cursor(query, user_id):
-                    writer.writerow([
-                        fmt(row.get("full_name")),
-                        fmt(row.get("email")),
-                        fmt(row.get("linkedin_url")),
-                        fmt(row.get("headline")),
-                        fmt(row.get("about")),
-                        fmt(row.get("current_company")),
-                        fmt(row.get("current_company_linkedin_url")),
-                        fmt(row.get("current_company_website_url")),
-                        fmt(row.get("experiences")),
-                        fmt(row.get("skills")),
-                        fmt(row.get("education")),
-                        fmt(row.get("keywords")),
-                    ])
-                    row_count += 1
+        size_kb = round(os.path.getsize(file_path) / 1024, 2)
+        row_count = len(results)
 
-        size_kb = os.path.getsize(file_path) / 1024
+        # Build smart response
+        if os.getenv("PORT"):  # Running on Railway
+            curl_example = shell_cmd(
+                f"curl -H 'X-API-Key: {user_id}' "
+                f"-o linkedin_network.csv {APP_URL}/export/network.csv"
+            )
+            python_example = py_cmd(
+                f"import requests\n\n"
+                f"resp = requests.get('{APP_URL}/export/network.csv', headers={{'X-API-Key': '{user_id}'}})\n"
+                f"open('linkedin_network.csv', 'wb').write(resp.content)\n"
+                f"print('✅ Downloaded linkedin_network.csv')"
+            )
 
-        resp = {
+            message = (
+                f"✅ Export completed.\n\n"
+                f"📈 Total Contacts: {row_count}\n"
+                f"💾 Estimated Size: {size_kb} KB\n\n"
+                f"Use one of the commands below to download your CSV:\n\n"
+                f"**Command line (curl):**\n{curl_example}\n\n"
+                f"**Python script:**\n{python_example}\n\n"
+                f"🔗 Live download: {APP_URL}/export/network.csv"
+            )
+
+        else:  # Local mode
+            message = (
+                f"✅ Export completed locally.\n\n"
+                f"📁 File saved to: {file_path}\n"
+                f"📈 Total Contacts: {row_count}\n"
+                f"💾 File Size: {size_kb} KB\n\n"
+                f"Run this command to open it:\n{shell_cmd('open data/network.csv')}"
+            )
+
+        return json.dumps({
             "status": "success",
+            "message": message,
             "path": file_path,
             "row_count": row_count,
-            "size_kb": round(size_kb, 2),
-        }
-
-        # If running under HTTP (Railway), provide a direct download URL (no base64)
-        if os.getenv("PORT"):
-            resp["download_url"] = "/download/network.csv"
-
-        return json.dumps(resp)
-
+            "size_kb": size_kb
+        })
     except Exception as e:
+        error_msg = str(e)
         return json.dumps({
             "status": "error",
-            "message": f"Error exporting CSV: {str(e)}"
+            "message": f"Error exporting CSV: {error_msg}"
         })
 
-# -------------------------------------------------------------------
+# ---------------------------
 # Deployment
-# -------------------------------------------------------------------
+# ---------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or "8000")
 
     if os.getenv("PORT"):
         print(f"🚀 Starting MCP server on port {port} (Railway mode)")
 
-        # Use trailing slash on messages
         sse_app = create_sse_app(
             mcp,
-            message_path="/messages/",   # <-- changed here
+            message_path="/messages/",
             sse_path="/sse",
         )
 
@@ -348,7 +199,7 @@ if __name__ == "__main__":
             async def __call__(self, scope, receive, send):
                 if scope["type"] in ("http","websocket"):
                     headers = {k.decode().lower(): v.decode() for k,v in scope.get("headers",[])}
-                    api_key = headers.get("api_key") or headers.get("x-api-key") or headers.get("api-key") or headers.get("authorization")
+                    api_key = headers.get("x-api-key") or headers.get("authorization")
                     if api_key and api_key.lower().startswith("bearer "):
                         api_key = api_key.split(" ",1)[1].strip()
                     token = current_api_key.set(api_key)
@@ -356,95 +207,14 @@ if __name__ == "__main__":
                     finally: current_api_key.reset(token)
                 else: await self.app(scope, receive, send)
 
-        wrapped_sse_app = HeaderToContextMiddleware(sse_app)
-
         fastapi_root = FastAPI()
+
         @fastapi_root.get("/")
-        async def health(): return {"status":"ok","service":"LinkedIn Network MCP"}
+        async def health():
+            return {"status": "ok", "service": "LinkedIn Network MCP (smart)"}
 
-        @fastapi_root.get("/download/network.csv")
-        async def download_network_csv():
-            """Stream the user's network as CSV for download (no base64)."""
-            try:
-                user_id = await get_user_id()
-                pool = await get_db()
-
-                query = """
-                    SELECT 
-                        full_name, 
-                        email, 
-                        linkedin_url, 
-                        headline,
-                        about,
-                        current_company,
-                        current_company_linkedin_url,
-                        current_company_website_url,
-                        experiences,
-                        skills,
-                        education,
-                        keywords
-                    FROM people
-                    WHERE user_id = $1
-                    ORDER BY full_name
-                """
-
-                def fmt(v):
-                    if v is None:
-                        return ""
-                    if isinstance(v, (list, dict)):
-                        return json.dumps(v, default=str)
-                    return str(v)
-
-                async def row_iter():
-                    # Header
-                    header_buf = io.StringIO()
-                    csv.writer(header_buf).writerow([
-                        "Full Name",
-                        "Email",
-                        "LinkedIn URL",
-                        "Headline",
-                        "About",
-                        "Current Company",
-                        "Current Company LinkedIn URL",
-                        "Current Company Website URL",
-                        "Experiences",
-                        "Skills",
-                        "Education",
-                        "Keywords",
-                    ])
-                    yield header_buf.getvalue()
-
-                    # Stream rows from DB cursor
-                    async with pool.acquire() as conn:
-                        async for row in conn.cursor(query, user_id):
-                            buf = io.StringIO()
-                            csv.writer(buf).writerow([
-                                fmt(row.get("full_name")),
-                                fmt(row.get("email")),
-                                fmt(row.get("linkedin_url")),
-                                fmt(row.get("headline")),
-                                fmt(row.get("about")),
-                                fmt(row.get("current_company")),
-                                fmt(row.get("current_company_linkedin_url")),
-                                fmt(row.get("current_company_website_url")),
-                                fmt(row.get("experiences")),
-                                fmt(row.get("skills")),
-                                fmt(row.get("education")),
-                                fmt(row.get("keywords")),
-                            ])
-                            yield buf.getvalue()
-
-                headers = {
-                    "Content-Disposition": "attachment; filename=network.csv"
-                }
-                return StreamingResponse(row_iter(), media_type="text/csv; charset=utf-8", headers=headers)
-
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
-
-        fastapi_root.mount("/", wrapped_sse_app)
-
+        fastapi_root.mount("/", HeaderToContextMiddleware(sse_app))
         uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
     else:
-        print("🔧 Starting MCP server in STDIO mode (for Cursor)")
+        print("🔧 Starting MCP server in STDIO mode (local)")
         mcp.run()
