@@ -568,16 +568,24 @@ async def export_network_csv() -> str:
             csv_content = output.getvalue()
             csv_bytes = csv_content.encode('utf-8')
             
-            # Encode as base64
+            # Save CSV file to disk automatically
+            filename = "linkedin_network_export.csv"
+            filepath = os.path.join(os.getcwd(), filename)
+            
+            with open(filepath, 'wb') as f:
+                f.write(csv_bytes)
+            
+            # Encode as base64 (for compatibility with existing code that might expect it)
             encoded = base64.b64encode(csv_bytes).decode('utf-8')
             
             return json.dumps({
                 "status": "success",
-                "filename": "linkedin_network_export.csv",
+                "filename": filename,
+                "filepath": filepath,
                 "row_count": len(results),
                 "size_kb": round(len(csv_bytes) / 1024, 2),
                 "csv_base64": encoded,
-                "message": f"Successfully exported {len(results)} contacts from your network"
+                "message": f"Successfully exported {len(results)} contacts to {filepath}"
             }, indent=2)
             
     except Exception as e:
