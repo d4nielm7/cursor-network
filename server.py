@@ -9,13 +9,13 @@ from fastmcp.server.http import create_sse_app
 import asyncpg
 import os
 import json
-import base64
 import csv
 import io
 from typing import List
 from dotenv import load_dotenv
 from contextvars import ContextVar
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 import uvicorn
 
 # Load environment variables from .env file (override=False means existing env vars take precedence)
@@ -212,7 +212,7 @@ async def analyze_network() -> str:
         return json.dumps([dict(r) for r in results], indent=2, default=str)
 
 @mcp.tool()
-async def export_network_csv() -> str:
+async def export_network_csv(output_path: str | None = None) -> str:
     """
     Export your LinkedIn network contacts as a real CSV file saved to disk.
 
@@ -226,9 +226,26 @@ async def export_network_csv() -> str:
         user_id = await get_user_id()
         pool = await get_db()
 
+        # Resolve output path relative to WORKING_DIR (if provided)
+        base_dir = os.getenv("WORKING_DIR") or os.getcwd()
+
+        if output_path:
+            if os.path.isabs(output_path):
+                file_path = output_path
+            else:
+                file_path = os.path.join(base_dir, output_path)
+        else:
+            # Default relative path; on HTTP deployments, separate per-user to avoid collisions
+            default_rel = os.path.join("data", str(user_id), "network.csv") if os.getenv("PORT") else os.path.join("data", "network.csv")
+            file_path = os.path.join(base_dir, default_rel)
+        file_path = os.path.abspath(file_path)
+
+        # Ensure data directory exists
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+        # Stream rows from Postgres cursor directly to disk (no base64, no full fetch)
         async with pool.acquire() as conn:
-            results = await conn.fetch(
-                """
+            query = """
                 SELECT 
                     full_name, 
                     email, 
@@ -245,21 +262,16 @@ async def export_network_csv() -> str:
                 FROM people
                 WHERE user_id = $1
                 ORDER BY full_name
-                """,
-                user_id
-            )
+            """
 
-            if not results:
-                return json.dumps({
-                    "status": "error",
-                    "message": "No data found in your network."
-                })
+            def fmt(v):
+                if v is None:
+                    return ""
+                if isinstance(v, (list, dict)):
+                    return json.dumps(v, default=str)
+                return str(v)
 
-            # Ensure data directory exists
-            os.makedirs("data", exist_ok=True)
-            file_path = os.path.join("data", "network.csv")
-
-            # Write CSV directly to disk
+            row_count = 0
             with open(file_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow([
@@ -274,41 +286,40 @@ async def export_network_csv() -> str:
                     "Experiences",
                     "Skills",
                     "Education",
-                    "Keywords"
+                    "Keywords",
                 ])
 
-                def fmt(v):
-                    if v is None:
-                        return ""
-                    if isinstance(v, (list, dict)):
-                        return json.dumps(v, default=str)
-                    return str(v)
-
-                for row in results:
+                async for row in conn.cursor(query, user_id):
                     writer.writerow([
-                        fmt(row.get('full_name')),
-                        fmt(row.get('email')),
-                        fmt(row.get('linkedin_url')),
-                        fmt(row.get('headline')),
-                        fmt(row.get('about')),
-                        fmt(row.get('current_company')),
-                        fmt(row.get('current_company_linkedin_url')),
-                        fmt(row.get('current_company_website_url')),
-                        fmt(row.get('experiences')),
-                        fmt(row.get('skills')),
-                        fmt(row.get('education')),
-                        fmt(row.get('keywords')),
+                        fmt(row.get("full_name")),
+                        fmt(row.get("email")),
+                        fmt(row.get("linkedin_url")),
+                        fmt(row.get("headline")),
+                        fmt(row.get("about")),
+                        fmt(row.get("current_company")),
+                        fmt(row.get("current_company_linkedin_url")),
+                        fmt(row.get("current_company_website_url")),
+                        fmt(row.get("experiences")),
+                        fmt(row.get("skills")),
+                        fmt(row.get("education")),
+                        fmt(row.get("keywords")),
                     ])
+                    row_count += 1
 
-            size_kb = os.path.getsize(file_path) / 1024
-            row_count = len(results)
+        size_kb = os.path.getsize(file_path) / 1024
 
-            return json.dumps({
-                "status": "success",
-                "path": file_path,
-                "row_count": row_count,
-                "size_kb": round(size_kb, 2)
-            })
+        resp = {
+            "status": "success",
+            "path": file_path,
+            "row_count": row_count,
+            "size_kb": round(size_kb, 2),
+        }
+
+        # If running under HTTP (Railway), provide a direct download URL (no base64)
+        if os.getenv("PORT"):
+            resp["download_url"] = "/download/network.csv"
+
+        return json.dumps(resp)
 
     except Exception as e:
         return json.dumps({
@@ -350,6 +361,87 @@ if __name__ == "__main__":
         fastapi_root = FastAPI()
         @fastapi_root.get("/")
         async def health(): return {"status":"ok","service":"LinkedIn Network MCP"}
+
+        @fastapi_root.get("/download/network.csv")
+        async def download_network_csv():
+            """Stream the user's network as CSV for download (no base64)."""
+            try:
+                user_id = await get_user_id()
+                pool = await get_db()
+
+                query = """
+                    SELECT 
+                        full_name, 
+                        email, 
+                        linkedin_url, 
+                        headline,
+                        about,
+                        current_company,
+                        current_company_linkedin_url,
+                        current_company_website_url,
+                        experiences,
+                        skills,
+                        education,
+                        keywords
+                    FROM people
+                    WHERE user_id = $1
+                    ORDER BY full_name
+                """
+
+                def fmt(v):
+                    if v is None:
+                        return ""
+                    if isinstance(v, (list, dict)):
+                        return json.dumps(v, default=str)
+                    return str(v)
+
+                async def row_iter():
+                    # Header
+                    header_buf = io.StringIO()
+                    csv.writer(header_buf).writerow([
+                        "Full Name",
+                        "Email",
+                        "LinkedIn URL",
+                        "Headline",
+                        "About",
+                        "Current Company",
+                        "Current Company LinkedIn URL",
+                        "Current Company Website URL",
+                        "Experiences",
+                        "Skills",
+                        "Education",
+                        "Keywords",
+                    ])
+                    yield header_buf.getvalue()
+
+                    # Stream rows from DB cursor
+                    async with pool.acquire() as conn:
+                        async for row in conn.cursor(query, user_id):
+                            buf = io.StringIO()
+                            csv.writer(buf).writerow([
+                                fmt(row.get("full_name")),
+                                fmt(row.get("email")),
+                                fmt(row.get("linkedin_url")),
+                                fmt(row.get("headline")),
+                                fmt(row.get("about")),
+                                fmt(row.get("current_company")),
+                                fmt(row.get("current_company_linkedin_url")),
+                                fmt(row.get("current_company_website_url")),
+                                fmt(row.get("experiences")),
+                                fmt(row.get("skills")),
+                                fmt(row.get("education")),
+                                fmt(row.get("keywords")),
+                            ])
+                            yield buf.getvalue()
+
+                headers = {
+                    "Content-Disposition": "attachment; filename=network.csv"
+                }
+                return StreamingResponse(row_iter(), media_type="text/csv; charset=utf-8", headers=headers)
+
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
         fastapi_root.mount("/", wrapped_sse_app)
 
         uvicorn.run(fastapi_root, host="0.0.0.0", port=port)

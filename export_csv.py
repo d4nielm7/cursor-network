@@ -1,6 +1,5 @@
 import os
 import json
-import base64
 import argparse
 import asyncio
 
@@ -14,9 +13,10 @@ async def run_export(output_path: str) -> int:
     Returns 0 on success, non-zero on failure.
     """
     try:
-        result_json = await export_network_csv()
+        # Ask server to write directly to the requested path
+        result_json = await export_network_csv(output_path)
 
-        # If server returned a python dict as str, ensure it's parsed
+        # Ensure parsed
         result = json.loads(result_json)
 
         status = result.get("status")
@@ -25,23 +25,23 @@ async def run_export(output_path: str) -> int:
             print(f"Export failed: {message}")
             return 2
 
-        b64 = result.get("csv_base64")
-        if not b64:
-            print("Export failed: csv_base64 missing in response")
-            return 3
+        # Confirm the file exists at the path returned
+        src_path = result.get("path")
+        if src_path and os.path.isfile(src_path):
+            row_count = result.get("row_count", 0)
+            size_kb = result.get("size_kb")
+            print(f"Saved CSV to: {src_path} ({row_count} rows, ~{size_kb} KB)")
+            return 0
 
-        csv_bytes = base64.b64decode(b64)
+        # If only a remote download URL is provided, guide the user
+        download_url = result.get("download_url")
+        if download_url:
+            print("Export succeeded, but file is available via HTTP only.")
+            print(f"Download from: {download_url}")
+            return 0
 
-        # Ensure output dir exists
-        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-
-        with open(output_path, "wb") as f:
-            f.write(csv_bytes)
-
-        row_count = result.get("row_count", 0)
-        size_kb = result.get("size_kb")
-        print(f"Saved CSV to: {output_path} ({row_count} rows, ~{size_kb} KB)")
-        return 0
+        print("Export succeeded but no file path or download URL returned.")
+        return 3
     except Exception as e:
         print(f"Unexpected error: {e}")
         return 1
