@@ -15,7 +15,8 @@ import base64
 from typing import List
 from dotenv import load_dotenv
 from contextvars import ContextVar
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
+from fastapi.responses import FileResponse
 import uvicorn
 import re
 
@@ -627,8 +628,46 @@ if __name__ == "__main__":
         wrapped_sse_app = HeaderToContextMiddleware(sse_app)
 
         fastapi_root = FastAPI()
+        
         @fastapi_root.get("/")
-        async def health(): return {"status":"ok","service":"LinkedIn Network MCP"}
+        async def health(): 
+            return {"status":"ok","service":"LinkedIn Network MCP"}
+        
+        @fastapi_root.get("/download/csv")
+        async def download_csv():
+            """Download the exported CSV file"""
+            try:
+                # Validate API key (export_network_csv will also call get_user_id internally)
+                await get_user_id()
+                filename = "linkedin_network_export.csv"
+                filepath = os.path.join(os.getcwd(), filename)
+                
+                # Check if file exists
+                if not os.path.exists(filepath):
+                    # Generate it if it doesn't exist
+                    result_json = await export_network_csv()
+                    result = json.loads(result_json)
+                    if result.get("status") != "success":
+                        return Response(
+                            content=json.dumps({"error": "Failed to generate CSV"}),
+                            status_code=500,
+                            media_type="application/json"
+                        )
+                
+                # Return the file
+                return FileResponse(
+                    filepath,
+                    filename=filename,
+                    media_type="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"}
+                )
+            except Exception as e:
+                return Response(
+                    content=json.dumps({"error": str(e)}),
+                    status_code=500,
+                    media_type="application/json"
+                )
+        
         fastapi_root.mount("/", wrapped_sse_app)
 
         uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
