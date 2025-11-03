@@ -1,6 +1,6 @@
 """
 LinkedIn Network CSV Exporter
-Simple, direct export using Python's built-in csv module.
+Connects directly to database to retrieve data as JSON, then converts to CSV.
 Auto-detects working directory and creates data/ folder if needed.
 
 Usage:
@@ -46,31 +46,23 @@ def format_value(value):
     return str(value)
 
 
-async def export_csv(output_path: str = None) -> int:
+async def retrieve_data_from_database() -> list:
     """
-    Export LinkedIn network to CSV using direct database connection.
-    Simple approach using Python's built-in csv module.
+    Retrieve data directly from database and return as list of dicts (JSON-compatible).
     """
     if not DATABASE_URL:
-        print("❌ Error: DATABASE_URL not set in environment")
-        return 1
+        raise Exception("DATABASE_URL not set in environment")
     
     if not API_KEY:
-        print("❌ Error: API_KEY not set in environment")
-        return 1
+        raise Exception("API_KEY not set in environment")
+    
+    print("🔄 Connecting to database...")
+    
+    pool = await asyncpg.create_pool(DATABASE_URL)
     
     try:
-        print("=" * 60)
-        print("LinkedIn Network CSV Exporter")
-        print("=" * 60)
-        print("🔄 Connecting to database...")
-        
-        # CONNECT TO DATABASE
-        pool = await asyncpg.create_pool(DATABASE_URL)
-        
         async with pool.acquire() as conn:
             print("📊 Querying contacts...")
-            # SELECT ALL CONTACTS
             results = await conn.fetch(
                 """
                 SELECT 
@@ -84,9 +76,42 @@ async def export_csv(output_path: str = None) -> int:
                 API_KEY
             )
         
-        if not results:
+        # Convert asyncpg Row objects to plain Python dicts (JSON-compatible)
+        contacts = []
+        for row in results:
+            contact = {}
+            for key in row.keys():
+                value = row[key]
+                # Handle None values and complex types
+                if value is None:
+                    contact[key] = None
+                elif isinstance(value, (list, dict)):
+                    contact[key] = json.dumps(value, ensure_ascii=False)
+                else:
+                    contact[key] = value
+            contacts.append(contact)
+        
+        return contacts
+        
+    finally:
+        await pool.close()
+
+
+async def export_csv(output_path: str = None) -> int:
+    """
+    Export LinkedIn network to CSV.
+    Retrieves JSON data from database and converts to CSV format.
+    """
+    try:
+        print("=" * 60)
+        print("LinkedIn Network CSV Exporter")
+        print("=" * 60)
+        
+        # Retrieve data from database (as JSON-compatible list of dicts)
+        contacts = await retrieve_data_from_database()
+        
+        if not contacts:
             print("⚠️  No contacts found in your LinkedIn network.")
-            await pool.close()
             return 1
         
         # Get output path
@@ -98,46 +123,33 @@ async def export_csv(output_path: str = None) -> int:
             # CSV FILE WRITER
             writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
             
-            # Write header row
-            writer.writerow([
-                "full_name", "email", "linkedin_url", "headline", "about",
-                "current_company", "current_company_linkedin_url",
-                "current_company_website_url", "experiences", "skills", 
-                "education", "keywords"
-            ])
-            
-            # WRITE ROWS TO CSV
-            for row in results:
-                writer.writerow([
-                    format_value(row.get("full_name")),
-                    format_value(row.get("email")),
-                    format_value(row.get("linkedin_url")),
-                    format_value(row.get("headline")),
-                    format_value(row.get("about")),
-                    format_value(row.get("current_company")),
-                    format_value(row.get("current_company_linkedin_url")),
-                    format_value(row.get("current_company_website_url")),
-                    format_value(row.get("experiences")),
-                    format_value(row.get("skills")),
-                    format_value(row.get("education")),
-                    format_value(row.get("keywords")),
-                ])
+            # Get column names from first contact (properly mapped)
+            if contacts:
+                columns = list(contacts[0].keys())
+                
+                # Write header row
+                writer.writerow(columns)
+                
+                # WRITE ROWS TO CSV - map JSON data properly
+                for contact in contacts:
+                    writer.writerow([
+                        format_value(contact.get(col)) for col in columns
+                    ])
         
         # Calculate stats
         size_kb = round(file_path.stat().st_size / 1024, 2)
-        row_count = len(results)
+        row_count = len(contacts)
+        column_count = len(contacts[0].keys()) if contacts else 0
         
         print("\n" + "=" * 60)
         print("✅ EXPORT COMPLETED!")
         print("=" * 60)
         print(f"📁 File: {file_path}")
         print(f"📈 Total Contacts: {row_count}")
-        print(f"📊 Columns: 12")
+        print(f"📊 Columns: {column_count}")
         print(f"💾 File Size: {size_kb} KB")
         print("=" * 60)
         
-        # Close connection
-        await pool.close()
         return 0
         
     except Exception as e:
@@ -171,4 +183,3 @@ Examples:
 
 if __name__ == "__main__":
     exit(main())
-
