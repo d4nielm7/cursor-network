@@ -9,14 +9,11 @@ from fastmcp.server.http import create_sse_app
 import asyncpg
 import os
 import json
-import csv
-import io
 from typing import List
 from dotenv import load_dotenv
 from contextvars import ContextVar
 from fastapi import FastAPI
 import uvicorn
-import pandas as pd
 
 # ---------------------------
 # Environment and setup
@@ -107,21 +104,16 @@ def py_cmd(code: str) -> str:
 # ---------------------------
 
 @mcp.tool()
-async def export_network_csv(output_path: str = "data/network.csv") -> str:
+async def export_network_csv() -> str:
     """
-    Export LinkedIn network to a CSV file.
+    Retrieve LinkedIn network data from the database.
     
-    The CSV data is returned in the response for Cursor to save locally.
-    The server NEVER writes files to disk - all file operations happen client-side.
-    
-    Args:
-        output_path: Relative path where CSV should be saved (for reference only).
-                     Defaults to "data/network.csv".
-                     Cursor will save relative to its current working directory.
+    The MCP server only retrieves raw data - it does NOT generate CSV or write files.
+    Cursor will handle CSV conversion and file saving.
     
     Returns:
-        JSON string with CSV data and metadata:
-        {"status": "success", "csv_data": "...", "download_path": "data/network.csv", "save_locally": true, ...}
+        JSON string with raw contact data:
+        {"status": "success", "data": [...], "row_count": 150, "column_count": 12}
     """
     try:
         user_id = await get_user_id()
@@ -147,59 +139,38 @@ async def export_network_csv(output_path: str = "data/network.csv") -> str:
                 "message": "No contacts found in your LinkedIn network."
             })
 
-        # Convert asyncpg results to pandas DataFrame
-        # This ensures exact column matching and proper data handling
-        df = pd.DataFrame([dict(row) for row in results])
+        # Convert asyncpg Row objects to plain Python dicts
+        # Handle None values and complex types (lists/dicts) as-is
+        contacts = []
+        for row in results:
+            contact = {}
+            for key in row.keys():
+                value = row[key]
+                # Keep None as None, convert lists/dicts to JSON strings for CSV compatibility
+                if value is None:
+                    contact[key] = None
+                elif isinstance(value, (list, dict)):
+                    contact[key] = json.dumps(value, ensure_ascii=False)
+                else:
+                    contact[key] = value
+            contacts.append(contact)
         
-        # Verify we have data
-        if df.empty:
-            return json.dumps({
-                "status": "error",
-                "message": "No contacts found in your LinkedIn network."
-            })
-        
-        # Convert complex types (list/dict) to JSON strings for CSV compatibility
-        # pandas handles None/NaN automatically
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                # Check if column contains lists or dicts
-                mask = df[col].apply(lambda x: isinstance(x, (list, dict)) if pd.notna(x) else False)
-                if mask.any():
-                    df.loc[mask, col] = df.loc[mask, col].apply(lambda x: json.dumps(x, ensure_ascii=False) if pd.notna(x) else '')
-        
-        # Get counts from DataFrame (before converting to CSV)
-        row_count = len(df)
-        actual_column_count = len(df.columns)
-        
-        # Convert to CSV string (for client-side saving)
-        csv_content = df.to_csv(index=False, encoding='utf-8', na_rep='', quoting=csv.QUOTE_MINIMAL)
-        
-        # Calculate size from CSV content
-        size_kb = round(len(csv_content.encode('utf-8')) / 1024, 2)
-        
-        # Always return CSV data in response - never write to disk
-        # Cursor will handle saving the file locally
-        download_path = output_path  # e.g., "data/network.csv"
+        row_count = len(contacts)
+        column_count = len(contacts[0].keys()) if contacts else 0
         
         message = (
-            f"✅ Export completed.\n\n"
+            f"✅ Data retrieved successfully.\n\n"
             f"📈 Total Contacts: {row_count}\n"
-            f"📊 Columns: {actual_column_count}\n"
-            f"💾 File Size: {size_kb} KB\n\n"
-            f"📁 CSV data returned - will be saved to: {download_path}\n"
-            f"📂 Relative to Cursor's current working directory.\n\n"
-            f"The CSV content is included in this response for Cursor to save locally."
+            f"📊 Columns: {column_count}\n\n"
+            f"Raw data returned - Cursor will generate CSV and save locally."
         )
         
         return json.dumps({
             "status": "success",
             "message": message,
-            "csv_data": csv_content,  # CSV content for Cursor to save locally
-            "download_path": download_path,  # Relative path like "data/network.csv"
+            "data": contacts,  # Raw contact data as list of dicts
             "row_count": row_count,
-            "column_count": actual_column_count,
-            "size_kb": size_kb,
-            "save_locally": True  # Flag to indicate Cursor should save locally
+            "column_count": column_count
         })
     except Exception as e:
         error_msg = str(e)
