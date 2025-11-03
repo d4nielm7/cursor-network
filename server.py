@@ -84,18 +84,20 @@ async def export_network_csv() -> str:
             value = row[key]
             if value is None:
                 contact[key] = ""
-            elif isinstance(value, (list, dict)):
-                contact[key] = json.dumps(value, ensure_ascii=False)
+            elif isinstance(value, list):
+                contact[key] = ', '.join(map(str, value)).replace('\n', ' ').replace('\r', ' ')
+            elif isinstance(value, dict):
+                contact[key] = json.dumps(value, ensure_ascii=False).replace('\n', ' ').replace('\r', ' ')
             else:
-                contact[key] = value
+                contact[key] = str(value).replace('\n', ' ').replace('\r', ' ')
         contacts.append(contact)
 
     output = io.StringIO()
     columns = list(contacts[0].keys())
-    writer = csv.writer(output)
+    writer = csv.writer(output, delimiter=',', quoting=csv.QUOTE_ALL, lineterminator='\n')
     writer.writerow(columns)
     for contact in contacts:
-        writer.writerow([str(contact.get(col, "")) if contact.get(col) is not None else "" for col in columns])
+        writer.writerow([contact.get(col, "") for col in columns])
 
     csv_content = output.getvalue()
     return csv_content
@@ -147,7 +149,6 @@ if __name__ == "__main__":
         async def health():
             return {"status": "ok", "service": "LinkedIn Network MCP (smart)"}
 
-        # Optional: also add a REST endpoint for downloading CSV directly
         @fastapi_root.get("/download-csv")
         async def download_csv():
             user_id = await get_user_id()
@@ -176,18 +177,20 @@ if __name__ == "__main__":
                     value = row[key]
                     if value is None:
                         contact[key] = ""
-                    elif isinstance(value, (list, dict)):
-                        contact[key] = json.dumps(value, ensure_ascii=False)
+                    elif isinstance(value, list):
+                        contact[key] = ', '.join(map(str, value)).replace('\n', ' ').replace('\r', ' ')
+                    elif isinstance(value, dict):
+                        contact[key] = json.dumps(value, ensure_ascii=False).replace('\n', ' ').replace('\r', ' ')
                     else:
-                        contact[key] = value
+                        contact[key] = str(value).replace('\n', ' ').replace('\r', ' ')
                 contacts.append(contact)
 
             output = io.StringIO()
             columns = list(contacts[0].keys())
-            writer = csv.writer(output)
+            writer = csv.writer(output, delimiter=',', quoting=csv.QUOTE_ALL, lineterminator='\n')
             writer.writerow(columns)
             for contact in contacts:
-                writer.writerow([str(contact.get(col, "")) if contact.get(col) is not None else "" for col in columns])
+                writer.writerow([contact.get(col, "") for col in columns])
             output.seek(0)
             headers = {"Content-Disposition": "attachment; filename=network.csv"}
             return StreamingResponse(output, media_type='text/csv', headers=headers)
