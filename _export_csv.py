@@ -1,4 +1,4 @@
-"""Create CSV from MCP export_network_csv response - uses server.py approach"""
+"""Create CSV from MCP export_network_csv response - flexible export path"""
 import csv
 import json
 import asyncio
@@ -13,17 +13,17 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("API_KEY")
 
 async def get_data_and_create_csv():
-    """Get data from database (same as server.py) and create CSV"""
+    """Get data from database and create CSV at best location ('data/' or './')."""
     if not DATABASE_URL:
         raise Exception("DATABASE_URL not set")
     if not API_KEY:
         raise Exception("API_KEY not set")
-    
+
     print("=" * 60)
     print("LinkedIn Network CSV Export")
     print("=" * 60)
     print("🔄 Connecting to database...")
-    
+
     pool = await asyncpg.create_pool(DATABASE_URL)
     try:
         async with pool.acquire() as conn:
@@ -40,11 +40,11 @@ async def get_data_and_create_csv():
                 """,
                 API_KEY
             )
-        
+
         if not results:
             print("⚠️  No contacts found.")
             return
-        
+
         # Convert to dicts (same as server.py)
         contacts = []
         for row in results:
@@ -58,16 +58,19 @@ async def get_data_and_create_csv():
                 else:
                     contact[key] = value
             contacts.append(contact)
-        
-        # Create CSV file
-        data_dir = Path("data")
-        data_dir.mkdir(exist_ok=True)
-        csv_path = data_dir / "network.csv"
-        
+
+        # Try writing to data/network.csv; fallback to ./network.csv on error
         columns = list(contacts[0].keys())
-        
-        print(f"💾 Creating CSV file: {csv_path}")
-        
+        csv_path = None
+        try:
+            data_dir = Path("data")
+            data_dir.mkdir(exist_ok=True)
+            csv_path = data_dir / "network.csv"
+            print(f"💾 Creating CSV file: {csv_path}")
+        except Exception as e:
+            csv_path = Path("network.csv")
+            print(f"⚠️  Could not use 'data/' directory ({e}), saving as {csv_path}")
+
         with open(csv_path, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
             writer.writerow(columns)
@@ -76,7 +79,7 @@ async def get_data_and_create_csv():
                     str(contact.get(col, "")) if contact.get(col) is not None else ""
                     for col in columns
                 ])
-        
+
         file_size_kb = round(csv_path.stat().st_size / 1024, 2)
         print("\n" + "=" * 60)
         print("✅ CSV EXPORT COMPLETED!")
