@@ -1,8 +1,20 @@
+"""
+LinkedIn Network CSV Exporter
+Simple, direct export using Python's built-in csv module.
+Auto-detects working directory and creates data/ folder if needed.
+
+Usage:
+    python simple_export.py
+    python simple_export.py --output custom/path/network.csv
+"""
+
 import os
 import json
 import csv
 import asyncio
 import asyncpg
+import argparse
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv(override=False)
@@ -10,19 +22,55 @@ load_dotenv(override=False)
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("API_KEY")
 
-async def export_csv():
+
+def get_output_path(output_path: str = None) -> Path:
+    """Get the absolute output path, creating directories as needed."""
+    if output_path:
+        path = Path(output_path)
+    else:
+        # Auto-detect: use current working directory
+        cwd = Path.cwd()
+        path = cwd / "data" / "network.csv"
+    
+    # Ensure parent directory exists
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def format_value(value):
+    """Format a value for CSV (handle None, lists, dicts)."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+async def export_csv(output_path: str = None) -> int:
+    """
+    Export LinkedIn network to CSV using direct database connection.
+    Simple approach using Python's built-in csv module.
+    """
     if not DATABASE_URL:
-        print("Error: DATABASE_URL not set")
+        print("❌ Error: DATABASE_URL not set in environment")
         return 1
     
     if not API_KEY:
-        print("Error: API_KEY not set")
+        print("❌ Error: API_KEY not set in environment")
         return 1
     
     try:
+        print("=" * 60)
+        print("LinkedIn Network CSV Exporter")
+        print("=" * 60)
+        print("🔄 Connecting to database...")
+        
+        # CONNECT TO DATABASE
         pool = await asyncpg.create_pool(DATABASE_URL)
         
         async with pool.acquire() as conn:
+            print("📊 Querying contacts...")
+            # SELECT ALL CONTACTS
             results = await conn.fetch(
                 """
                 SELECT 
@@ -37,61 +85,90 @@ async def export_csv():
             )
         
         if not results:
-            print("No contacts found in your LinkedIn network.")
+            print("⚠️  No contacts found in your LinkedIn network.")
+            await pool.close()
             return 1
         
-        # Create data directory if it doesn't exist
-        os.makedirs("data", exist_ok=True)
-        file_path = "data/network.csv"
+        # Get output path
+        file_path = get_output_path(output_path)
+        print(f"💾 Saving to: {file_path}")
         
-        with open(file_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
+        # EXPORT ALL CONTACTS TO CSV
+        with open(file_path, mode="w", encoding="utf-8", newline="") as f:
+            # CSV FILE WRITER
+            writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+            
+            # Write header row
             writer.writerow([
-                "Full Name","Email","LinkedIn URL","Headline","About",
-                "Current Company","Current Company LinkedIn URL","Current Company Website URL",
-                "Experiences","Skills","Education","Keywords"
+                "full_name", "email", "linkedin_url", "headline", "about",
+                "current_company", "current_company_linkedin_url",
+                "current_company_website_url", "experiences", "skills", 
+                "education", "keywords"
             ])
             
-            def fmt(v):
-                if v is None:
-                    return ""
-                if isinstance(v, (list, dict)):
-                    return json.dumps(v, ensure_ascii=False)
-                return str(v)
-            
+            # WRITE ROWS TO CSV
             for row in results:
                 writer.writerow([
-                    fmt(row.get("full_name")),
-                    fmt(row.get("email")),
-                    fmt(row.get("linkedin_url")),
-                    fmt(row.get("headline")),
-                    fmt(row.get("about")),
-                    fmt(row.get("current_company")),
-                    fmt(row.get("current_company_linkedin_url")),
-                    fmt(row.get("current_company_website_url")),
-                    fmt(row.get("experiences")),
-                    fmt(row.get("skills")),
-                    fmt(row.get("education")),
-                    fmt(row.get("keywords")),
+                    format_value(row.get("full_name")),
+                    format_value(row.get("email")),
+                    format_value(row.get("linkedin_url")),
+                    format_value(row.get("headline")),
+                    format_value(row.get("about")),
+                    format_value(row.get("current_company")),
+                    format_value(row.get("current_company_linkedin_url")),
+                    format_value(row.get("current_company_website_url")),
+                    format_value(row.get("experiences")),
+                    format_value(row.get("skills")),
+                    format_value(row.get("education")),
+                    format_value(row.get("keywords")),
                 ])
         
-        size_kb = round(os.path.getsize(file_path) / 1024, 2)
+        # Calculate stats
+        size_kb = round(file_path.stat().st_size / 1024, 2)
         row_count = len(results)
         
-        print(f"✅ Export completed!")
-        print(f"📁 File saved to: {file_path}")
+        print("\n" + "=" * 60)
+        print("✅ EXPORT COMPLETED!")
+        print("=" * 60)
+        print(f"📁 File: {file_path}")
         print(f"📈 Total Contacts: {row_count}")
+        print(f"📊 Columns: 12")
         print(f"💾 File Size: {size_kb} KB")
+        print("=" * 60)
         
+        # Close connection
         await pool.close()
         return 0
         
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"\n❌ Error: {e}")
         import traceback
         traceback.print_exc()
         return 1
 
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Export LinkedIn network to CSV file",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python simple_export.py
+  python simple_export.py --output custom/path/network.csv
+  python simple_export.py -o data/my_network.csv
+        """
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output CSV file path (default: data/network.csv relative to current directory)",
+    )
+    args = parser.parse_args()
+    
+    return asyncio.run(export_csv(args.output))
+
+
 if __name__ == "__main__":
-    exit(asyncio.run(export_csv()))
+    exit(main())
 
