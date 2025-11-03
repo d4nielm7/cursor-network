@@ -220,11 +220,21 @@ if __name__ == "__main__":
                     
                     try: 
                         await self.app(scope, receive, send)
+                    except Exception as e:
+                        # Don't reset context on error, just log it
+                        print(f"Error in middleware: {e}")
                     finally: 
-                        current_api_key.reset(api_token)
+                        # Only reset if we actually set a token
+                        if api_token:
+                            try:
+                                current_api_key.reset(api_token)
+                            except ValueError:
+                                pass  # ContextVar was not set
                         if working_dir_token:
-                            current_working_dir.reset(working_dir_token)
-                else: await self.app(scope, receive, send)
+                            try:
+                                current_working_dir.reset(working_dir_token)
+                            except ValueError:
+                                pass  # ContextVar was not set
 
         fastapi_root = FastAPI()
 
