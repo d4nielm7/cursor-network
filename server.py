@@ -1,12 +1,14 @@
 import os
-import json
 import csv
-import io
+import json
 import asyncpg
 from fastmcp import FastMCP
 from fastmcp.server.http import create_sse_app
 from dotenv import load_dotenv
 from contextvars import ContextVar
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+import uvicorn
 
 load_dotenv(override=False)
 mcp = FastMCP("LinkedIn Network")
@@ -69,7 +71,6 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
         contacts.append(contact)
 
     columns = list(contacts[0].keys())
-    # Write to disk
     with open(filepath, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter=',', quoting=csv.QUOTE_ALL, lineterminator='\n')
         writer.writerow(columns)
@@ -77,5 +78,38 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
             writer.writerow([contact.get(col, "") for col in columns])
     return f"CSV with {len(contacts)} contacts written to {os.path.abspath(filepath)}"
 
-# MCP/HTTP server bootstrapping is the same as before...
-# Add the tool call to your desired toolset or UI.
+# ---------- FastAPI for CSV Download ----------
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT") or "8000")
+    if os.getenv("PORT"):
+        sse_app = create_sse_app(
+            mcp,
+            message_path="/messages/",
+            sse_path="/sse",
+        )
+
+        fastapi_root = FastAPI()
+
+        @fastapi_root.get("/")
+        async def health():
+            return {"status": "ok", "service": "LinkedIn Network MCP (smart)"}
+
+        @fastapi_root.get("/file-csv")
+        async def file_csv():
+            """Download the already-generated CSV file from server."""
+            file_path = "network.csv"
+            if not os.path.isfile(file_path):
+                return {"status": "error", "message": f"File '{file_path}' not found."}
+            return FileResponse(
+                path=file_path,
+                media_type='text/csv',
+                filename='network.csv',
+                headers={"Content-Disposition": "attachment; filename=network.csv"}
+            )
+
+        fastapi_root.mount("/", sse_app)
+        uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
+    else:
+        print("🔧 Starting MCP server in STDIO mode (local)")
+        mcp.run()
