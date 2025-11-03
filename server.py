@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from contextvars import ContextVar
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
-from fastapi.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 
 load_dotenv(override=False)
