@@ -8,12 +8,15 @@ from fastmcp.server.http import create_sse_app
 import asyncpg
 import os
 import json
-import pandas as pd
 from typing import List
 from dotenv import load_dotenv
 from contextvars import ContextVar
 from fastapi import FastAPI
 import uvicorn
+
+from fastapi.responses import StreamingResponse
+import io
+import csv
 
 # ---------------------------
 # Environment and setup
@@ -47,116 +50,11 @@ async def get_user_id():
     return user_id
 
 # ---------------------------
-# Helper utilities
+# Download CSV Endpoint (NEW)
 # ---------------------------
+# Insert into your FastAPI app part:
 
-def get_output_directory() -> str:
-    # Find or create base directory for outputs
-    working_dir = current_working_dir.get()
-    if working_dir:
-        os.makedirs(working_dir, exist_ok=True)
-        return os.path.abspath(working_dir)
-    working_dir = os.getenv("WORKING_DIR")
-    if working_dir:
-        os.makedirs(working_dir, exist_ok=True)
-        return os.path.abspath(working_dir)
-    return os.path.abspath(os.getcwd())
-
-def resolve_output_path(relative_path: str) -> str:
-    if os.path.isabs(relative_path):
-        return relative_path
-    base_dir = get_output_directory()
-    return os.path.abspath(os.path.join(base_dir, relative_path))
-
-# ---------- CSV Writer Utility ---------------
-
-def write_contacts_to_csv(contacts, csv_path: str):
-    import json
-    import pandas as pd
-    # Stringify list/dicts, None as ""
-    def conv(val):
-        if val is None:
-            return ""
-        if isinstance(val, (dict, list)):
-            return json.dumps(val, ensure_ascii=False)
-        return val
-    if not contacts:
-        raise ValueError("No contacts to write")
-    records = [{k: conv(v) for k, v in contact.items()} for contact in contacts]
-    df = pd.DataFrame(records)
-    df.to_csv(csv_path, encoding='utf-8', index=False)
-
-# ---------------------------
-# Tools
-# ---------------------------
-
-@mcp.tool()
-async def export_network_csv() -> str:
-    """
-    Export LinkedIn network to CSV file.
-    Retrieves all contacts from the database and returns them as JSON.
-    Also writes a CSV file to data/network.csv for download.
-    """
-    try:
-        user_id = await get_user_id()
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            results = await conn.fetch(
-                """
-                SELECT 
-                    full_name, email, linkedin_url, headline, about,
-                    current_company, current_company_linkedin_url,
-                    current_company_website_url, experiences, skills, education, keywords
-                FROM people
-                WHERE user_id = $1
-                ORDER BY full_name
-                """,
-                user_id
-            )
-
-        if not results:
-            return json.dumps({
-                "status": "error",
-                "message": "No contacts found in your LinkedIn network."
-            })
-
-        # Convert asyncpg Row objects to plain Python dicts
-        contacts = []
-        for row in results:
-            contact = {}
-            for key in row.keys():
-                value = row[key]
-                if value is None:
-                    contact[key] = None
-                elif isinstance(value, (list, dict)):
-                    contact[key] = json.dumps(value, ensure_ascii=False)
-                else:
-                    contact[key] = value
-            contacts.append(contact)
-        row_count = len(contacts)
-        column_count = len(contacts[0].keys()) if contacts else 0
-
-        # Write CSV file
-        csv_path = "network.csv"
-        try:
-            write_contacts_to_csv(contacts, csv_path)
-            csv_message = f"\nCSV created at: {csv_path}"
-        except Exception as e:
-            csv_message = f"\nCSV creation failed: {e}"
-
-        return json.dumps({
-            "status": "success",
-            "message": f"✅ Data retrieved successfully.{csv_message}\n📈 Total Contacts: {row_count}\n📊 Columns: {column_count}",
-            "data": contacts,
-            "row_count": row_count,
-            "column_count": column_count
-        })
-    except Exception as e:
-        error_msg = str(e)
-        return json.dumps({
-            "status": "error",
-            "message": f"Error exporting CSV: {error_msg}"
-        })
+# This section replaces separate CSV writers and doesn't need file/directory checks.
 
 # ---------------------------
 # Deployment
@@ -204,6 +102,56 @@ if __name__ == "__main__":
         @fastapi_root.get("/")
         async def health():
             return {"status": "ok", "service": "LinkedIn Network MCP (smart)"}
+
+        # ------- NEW CSV DOWNLOAD ENDPOINT -------
+        @fastapi_root.get("/download-csv")
+        async def download_csv():
+            user_id = await get_user_id()
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                results = await conn.fetch(
+                    """
+                    SELECT 
+                        full_name, email, linkedin_url, headline, about,
+                        current_company, current_company_linkedin_url,
+                        current_company_website_url, experiences, skills, education, keywords
+                    FROM people
+                    WHERE user_id = $1
+                    ORDER BY full_name
+                    """,
+                    user_id
+                )
+
+            if not results:
+                return {"status": "error", "message": "No contacts found."}
+
+            # Convert results to dict
+            contacts = []
+            for row in results:
+                contact = {}
+                for key in row.keys():
+                    value = row[key]
+                    if value is None:
+                        contact[key] = ""
+                    elif isinstance(value, (list, dict)):
+                        contact[key] = json.dumps(value, ensure_ascii=False)
+                    else:
+                        contact[key] = value
+                contacts.append(contact)
+
+            output = io.StringIO()
+            columns = list(contacts[0].keys())
+            writer = csv.writer(output)
+            writer.writerow(columns)
+            for contact in contacts:
+                writer.writerow([
+                    str(contact.get(col, "")) if contact.get(col) is not None else ""
+                    for col in columns
+                ])
+            output.seek(0)
+            headers = {"Content-Disposition": "attachment; filename=network.csv"}
+            return StreamingResponse(output, media_type='text/csv', headers=headers)
+        # ----------------------------------------
 
         fastapi_root.mount("/", HeaderToContextMiddleware(sse_app))
         uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
