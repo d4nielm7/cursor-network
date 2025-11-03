@@ -106,13 +106,23 @@ def py_cmd(code: str) -> str:
 @mcp.tool()
 async def export_network_csv() -> str:
     """
-    Retrieve LinkedIn network data from the database.
+    Export LinkedIn network to CSV file.
     
-    The MCP server only retrieves raw data - it does NOT generate CSV or write files.
-    Cursor will handle CSV conversion and file saving.
+    Retrieves all contacts from the database and returns them as JSON.
+    Cursor will automatically convert the JSON data to CSV format and save it to data/network.csv.
+    
+    This function should be called when the user requests to export their CSV.
+    After receiving the data, Cursor must:
+    1. Parse the JSON response
+    2. Extract the "data" array (list of contact dictionaries)
+    3. Create a CSV file at data/network.csv with:
+       - Header row: column names from the first contact
+       - Data rows: one row per contact
+    4. Handle None values as empty strings
+    5. Keep JSON strings for complex fields (lists/dicts) as-is
     
     Returns:
-        JSON string with raw contact data:
+        JSON string with contact data:
         {"status": "success", "data": [...], "row_count": 150, "column_count": 12}
     """
     try:
@@ -140,13 +150,11 @@ async def export_network_csv() -> str:
             })
 
         # Convert asyncpg Row objects to plain Python dicts
-        # Handle None values and complex types (lists/dicts) as-is
         contacts = []
         for row in results:
             contact = {}
             for key in row.keys():
                 value = row[key]
-                # Keep None as None, convert lists/dicts to JSON strings for CSV compatibility
                 if value is None:
                     contact[key] = None
                 elif isinstance(value, (list, dict)):
@@ -162,13 +170,13 @@ async def export_network_csv() -> str:
             f"✅ Data retrieved successfully.\n\n"
             f"📈 Total Contacts: {row_count}\n"
             f"📊 Columns: {column_count}\n\n"
-            f"Raw data returned - Cursor will generate CSV and save locally."
+            f"Cursor will create CSV file at: data/network.csv"
         )
         
         return json.dumps({
             "status": "success",
             "message": message,
-            "data": contacts,  # Raw contact data as list of dicts
+            "data": contacts,  # Raw contact data - Cursor will convert to CSV
             "row_count": row_count,
             "column_count": column_count
         })
