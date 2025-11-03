@@ -3,12 +3,12 @@ LinkedIn Network MCP Server (Smarter Version)
 Hosted on Railway - connects to Neon Postgres
 Users only need their API_KEY; DATABASE_URL is configured on Railway
 """
-
 from fastmcp import FastMCP
 from fastmcp.server.http import create_sse_app
 import asyncpg
 import os
 import json
+import pandas as pd
 from typing import List
 from dotenv import load_dotenv
 from contextvars import ContextVar
@@ -51,53 +51,40 @@ async def get_user_id():
 # ---------------------------
 
 def get_output_directory() -> str:
-    """
-    Get the base directory for file outputs.
-    Automatically detects where Cursor/MCP is running from.
-    Uses WORKING_DIR from context (SSE headers) or environment variable, otherwise uses current working directory.
-    """
-    # First check if WORKING_DIR is in context (from SSE headers)
+    # Find or create base directory for outputs
     working_dir = current_working_dir.get()
     if working_dir:
         os.makedirs(working_dir, exist_ok=True)
         return os.path.abspath(working_dir)
-    
-    # Then check environment variable
     working_dir = os.getenv("WORKING_DIR")
     if working_dir:
         os.makedirs(working_dir, exist_ok=True)
         return os.path.abspath(working_dir)
-    
-    # Otherwise, use current working directory (where Cursor/MCP is running)
-    # This automatically detects the user's current workspace
-    current_dir = os.getcwd()
-    return os.path.abspath(current_dir)
+    return os.path.abspath(os.getcwd())
 
 def resolve_output_path(relative_path: str) -> str:
-    """
-    Resolve a relative path to an absolute path using the output directory.
-    
-    Args:
-        relative_path: Relative path like "data/network.csv" or absolute path
-        
-    Returns:
-        Absolute path to the file
-    """
-    # If already absolute, return as-is
     if os.path.isabs(relative_path):
         return relative_path
-    
-    # Otherwise, resolve relative to output directory
     base_dir = get_output_directory()
     return os.path.abspath(os.path.join(base_dir, relative_path))
 
-def shell_cmd(cmd: str) -> str:
-    """Formats a command-line example block."""
-    return f"```bash\n{cmd}\n```"
+# ---------- CSV Writer Utility ---------------
 
-def py_cmd(code: str) -> str:
-    """Formats a Python example block."""
-    return f"```python\n{code}\n```"
+def write_contacts_to_csv(contacts, csv_path: str):
+    import json
+    import pandas as pd
+    # Stringify list/dicts, None as ""
+    def conv(val):
+        if val is None:
+            return ""
+        if isinstance(val, (dict, list)):
+            return json.dumps(val, ensure_ascii=False)
+        return val
+    if not contacts:
+        raise ValueError("No contacts to write")
+    records = [{k: conv(v) for k, v in contact.items()} for contact in contacts]
+    df = pd.DataFrame(records)
+    df.to_csv(csv_path, encoding='utf-8', index=False)
 
 # ---------------------------
 # Tools
@@ -107,28 +94,12 @@ def py_cmd(code: str) -> str:
 async def export_network_csv() -> str:
     """
     Export LinkedIn network to CSV file.
-    
     Retrieves all contacts from the database and returns them as JSON.
-    Cursor will automatically convert the JSON data to CSV format and save it to data/network.csv.
-    
-    This function should be called when the user requests to export their CSV.
-    After receiving the data, Cursor must:
-    1. Parse the JSON response
-    2. Extract the "data" array (list of contact dictionaries)
-    3. Create a CSV file at data/network.csv with:
-       - Header row: column names from the first contact
-       - Data rows: one row per contact
-    4. Handle None values as empty strings
-    5. Keep JSON strings for complex fields (lists/dicts) as-is
-    
-    Returns:
-        JSON string with contact data:
-        {"status": "success", "data": [...], "row_count": 150, "column_count": 12}
+    Also writes a CSV file to data/network.csv for download.
     """
     try:
         user_id = await get_user_id()
         pool = await get_db()
-
         async with pool.acquire() as conn:
             results = await conn.fetch(
                 """
@@ -162,21 +133,21 @@ async def export_network_csv() -> str:
                 else:
                     contact[key] = value
             contacts.append(contact)
-        
         row_count = len(contacts)
         column_count = len(contacts[0].keys()) if contacts else 0
-        
-        message = (
-            f"✅ Data retrieved successfully.\n\n"
-            f"📈 Total Contacts: {row_count}\n"
-            f"📊 Columns: {column_count}\n\n"
-            f"Cursor will create CSV file at: data/network.csv"
-        )
-        
+
+        # Write CSV file
+        csv_path = resolve_output_path("data/network.csv")
+        try:
+            write_contacts_to_csv(contacts, csv_path)
+            csv_message = f"\nCSV created at: {csv_path}"
+        except Exception as e:
+            csv_message = f"\nCSV creation failed: {e}"
+
         return json.dumps({
             "status": "success",
-            "message": message,
-            "data": contacts,  # Raw contact data - Cursor will convert to CSV
+            "message": f"✅ Data retrieved successfully.{csv_message}\n📈 Total Contacts: {row_count}\n📊 Columns: {column_count}",
+            "data": contacts,
             "row_count": row_count,
             "column_count": column_count
         })
@@ -192,7 +163,6 @@ async def export_network_csv() -> str:
 # ---------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or "8000")
-
     if os.getenv("PORT"):
         print(f"🚀 Starting MCP server on port {port} (Railway mode)")
 
@@ -210,31 +180,24 @@ if __name__ == "__main__":
                     api_key = headers.get("x-api-key") or headers.get("authorization")
                     if api_key and api_key.lower().startswith("bearer "):
                         api_key = api_key.split(" ",1)[1].strip()
-                    
-                    # Extract WORKING_DIR from headers (for SSE mode)
                     working_dir = headers.get("working-dir") or headers.get("working_dir")
-                    
-                    # Set context variables
                     api_token = current_api_key.set(api_key)
                     working_dir_token = current_working_dir.set(working_dir) if working_dir else None
-                    
                     try: 
                         await self.app(scope, receive, send)
                     except Exception as e:
-                        # Don't reset context on error, just log it
                         print(f"Error in middleware: {e}")
                     finally: 
-                        # Only reset if we actually set a token
                         if api_token:
                             try:
                                 current_api_key.reset(api_token)
                             except ValueError:
-                                pass  # ContextVar was not set
+                                pass
                         if working_dir_token:
                             try:
                                 current_working_dir.reset(working_dir_token)
                             except ValueError:
-                                pass  # ContextVar was not set
+                                pass
 
         fastapi_root = FastAPI()
 
