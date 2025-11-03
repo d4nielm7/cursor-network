@@ -6,8 +6,9 @@ from fastmcp import FastMCP
 from fastmcp.server.http import create_sse_app
 from dotenv import load_dotenv
 from contextvars import ContextVar
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
+from fastapi.middleware.base import BaseHTTPMiddleware
 import uvicorn
 
 load_dotenv(override=False)
@@ -80,16 +81,25 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
 
 # ---------- FastAPI for CSV Download ----------
 
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        api_key = request.headers.get("X-API-Key")
+        if api_key:
+            current_api_key.set(api_key)
+        response = await call_next(request)
+        return response
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or "8000")
     if os.getenv("PORT"):
+        fastapi_root = FastAPI()
+        fastapi_root.add_middleware(APIKeyMiddleware)
+        
         sse_app = create_sse_app(
             mcp,
             message_path="/messages/",
             sse_path="/sse",
         )
-
-        fastapi_root = FastAPI()
 
         @fastapi_root.get("/")
         async def health():
