@@ -50,14 +50,58 @@ async def get_user_id():
     return user_id
 
 # ---------------------------
-# Download CSV Endpoint (NEW)
+# MCP Tool for CSV Export
 # ---------------------------
-# Insert into your FastAPI app part:
+@mcp.tool()
+async def export_network_csv() -> str:
+    """
+    Export LinkedIn network as CSV string streamed to client.
+    This tool fetches contacts and returns CSV string.
+    """
+    user_id = await get_user_id()
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        results = await conn.fetch(
+            """
+            SELECT 
+                full_name, email, linkedin_url, headline, about,
+                current_company, current_company_linkedin_url,
+                current_company_website_url, experiences, skills, education, keywords
+            FROM people
+            WHERE user_id = $1
+            ORDER BY full_name
+            """,
+            user_id
+        )
 
-# This section replaces separate CSV writers and doesn't need file/directory checks.
+    if not results:
+        return json.dumps({"status": "error", "message": "No contacts found."})
+
+    contacts = []
+    for row in results:
+        contact = {}
+        for key in row.keys():
+            value = row[key]
+            if value is None:
+                contact[key] = ""
+            elif isinstance(value, (list, dict)):
+                contact[key] = json.dumps(value, ensure_ascii=False)
+            else:
+                contact[key] = value
+        contacts.append(contact)
+
+    output = io.StringIO()
+    columns = list(contacts[0].keys())
+    writer = csv.writer(output)
+    writer.writerow(columns)
+    for contact in contacts:
+        writer.writerow([str(contact.get(col, "")) if contact.get(col) is not None else "" for col in columns])
+
+    csv_content = output.getvalue()
+    return csv_content
 
 # ---------------------------
-# Deployment
+# Deployment and REST API
 # ---------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or "8000")
@@ -81,11 +125,11 @@ if __name__ == "__main__":
                     working_dir = headers.get("working-dir") or headers.get("working_dir")
                     api_token = current_api_key.set(api_key)
                     working_dir_token = current_working_dir.set(working_dir) if working_dir else None
-                    try: 
+                    try:
                         await self.app(scope, receive, send)
                     except Exception as e:
                         print(f"Error in middleware: {e}")
-                    finally: 
+                    finally:
                         if api_token:
                             try:
                                 current_api_key.reset(api_token)
@@ -103,7 +147,7 @@ if __name__ == "__main__":
         async def health():
             return {"status": "ok", "service": "LinkedIn Network MCP (smart)"}
 
-        # ------- NEW CSV DOWNLOAD ENDPOINT -------
+        # Optional: also add a REST endpoint for downloading CSV directly
         @fastapi_root.get("/download-csv")
         async def download_csv():
             user_id = await get_user_id()
@@ -125,7 +169,6 @@ if __name__ == "__main__":
             if not results:
                 return {"status": "error", "message": "No contacts found."}
 
-            # Convert results to dict
             contacts = []
             for row in results:
                 contact = {}
@@ -144,14 +187,10 @@ if __name__ == "__main__":
             writer = csv.writer(output)
             writer.writerow(columns)
             for contact in contacts:
-                writer.writerow([
-                    str(contact.get(col, "")) if contact.get(col) is not None else ""
-                    for col in columns
-                ])
+                writer.writerow([str(contact.get(col, "")) if contact.get(col) is not None else "" for col in columns])
             output.seek(0)
             headers = {"Content-Disposition": "attachment; filename=network.csv"}
             return StreamingResponse(output, media_type='text/csv', headers=headers)
-        # ----------------------------------------
 
         fastapi_root.mount("/", HeaderToContextMiddleware(sse_app))
         uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
