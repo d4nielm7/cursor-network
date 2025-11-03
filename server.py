@@ -182,6 +182,53 @@ async def export_network_csv(output_path: str = "data/network.csv") -> str:
 
         # Build smart response
         if os.getenv("PORT"):  # Running on Railway
+            # Check if WORKING_DIR is provided in headers (SSE mode - client wants local file)
+            working_dir_from_header = None
+            try:
+                # Try to get WORKING_DIR from context if available
+                working_dir_from_header = os.getenv("WORKING_DIR")
+            except:
+                pass
+            
+            # If WORKING_DIR is set, try to download CSV to local machine
+            if working_dir_from_header:
+                try:
+                    import requests
+                    download_url = f"{APP_URL}/export/network.csv"
+                    download_path = resolve_output_path(output_path)
+                    download_dir = os.path.dirname(download_path)
+                    os.makedirs(download_dir, exist_ok=True)
+                    
+                    # Download CSV from Railway to local machine
+                    resp = requests.get(download_url, headers={"X-API-Key": user_id}, timeout=30)
+                    if resp.status_code == 200:
+                        with open(download_path, 'wb') as f:
+                            f.write(resp.content)
+                        
+                        message = (
+                            f"✅ Export completed and downloaded to your local machine!\n\n"
+                            f"📁 File saved to: {download_path}\n"
+                            f"📂 Working directory: {working_dir_from_header}\n"
+                            f"📈 Total Contacts: {row_count}\n"
+                            f"📊 Columns: {actual_column_count}\n"
+                            f"💾 File Size: {size_kb} KB\n\n"
+                            f"The CSV was downloaded from Railway and saved locally."
+                        )
+                        
+                        return json.dumps({
+                            "status": "success",
+                            "message": message,
+                            "path": download_path,
+                            "row_count": row_count,
+                            "column_count": actual_column_count,
+                            "size_kb": size_kb,
+                            "working_dir": working_dir_from_header
+                        })
+                except Exception as download_error:
+                    # If download fails, fall through to manual download instructions
+                    pass
+            
+            # Manual download instructions (fallback)
             curl_example = shell_cmd(
                 f"curl -H 'X-API-Key: {user_id}' "
                 f"-o linkedin_network.csv {APP_URL}/export/network.csv"
