@@ -25,6 +25,7 @@ load_dotenv(override=False)
 mcp = FastMCP("LinkedIn Network")
 
 current_api_key: ContextVar[str | None] = ContextVar("current_api_key", default=None)
+current_working_dir: ContextVar[str | None] = ContextVar("current_working_dir", default=None)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -55,14 +56,25 @@ async def get_user_id():
 def get_output_directory() -> str:
     """
     Get the base directory for file outputs.
-    Uses WORKING_DIR environment variable if set, otherwise uses current directory.
+    Automatically detects where Cursor/MCP is running from.
+    Uses WORKING_DIR from context (SSE headers) or environment variable, otherwise uses current working directory.
     """
-    working_dir = os.getenv("WORKING_DIR")
+    # First check if WORKING_DIR is in context (from SSE headers)
+    working_dir = current_working_dir.get()
     if working_dir:
-        # Ensure the directory exists
         os.makedirs(working_dir, exist_ok=True)
         return os.path.abspath(working_dir)
-    return os.getcwd()
+    
+    # Then check environment variable
+    working_dir = os.getenv("WORKING_DIR")
+    if working_dir:
+        os.makedirs(working_dir, exist_ok=True)
+        return os.path.abspath(working_dir)
+    
+    # Otherwise, use current working directory (where Cursor/MCP is running)
+    # This automatically detects the user's current workspace
+    current_dir = os.getcwd()
+    return os.path.abspath(current_dir)
 
 def resolve_output_path(relative_path: str) -> str:
     """
@@ -97,19 +109,23 @@ def py_cmd(code: str) -> str:
 @mcp.tool()
 async def export_network_csv(output_path: str = "data/network.csv") -> str:
     """
-    Export LinkedIn network to a local CSV file or provide a ready-to-run download command.
+    Export LinkedIn network to a CSV file.
     
-    The CSV data is written directly to the filesystem (not returned in the response).
-    Only metadata (status, path, row count) is returned through the MCP protocol.
+    When running on Railway (SSE mode): CSV data is returned in the response for Cursor to save locally.
+    Cursor will automatically create the data/ folder if it doesn't exist and save relative to its current working directory.
+    
+    When running locally: CSV is written directly to the filesystem. The data/ folder is created automatically if needed.
     
     Args:
         output_path: Relative or absolute path where CSV will be saved. 
                      Defaults to "data/network.csv".
-                     If WORKING_DIR env var is set, relative paths are resolved relative to it.
-                     Otherwise, paths are relative to the MCP server's current directory.
+                     In Railway mode: Path is relative to Cursor's current working directory.
+                     In local mode: Path is resolved relative to the detected working directory.
     
     Returns:
-        JSON string with metadata: {"status": "success", "path": "/absolute/path/to/file.csv", "row_count": 150, "size_kb": 45.2}
+        JSON string with CSV data and metadata:
+        - Railway mode: {"status": "success", "csv_data": "...", "download_path": "data/network.csv", "save_locally": true, ...}
+        - Local mode: {"status": "success", "path": "/absolute/path/to/file.csv", ...}
     """
     try:
         user_id = await get_user_id()
@@ -135,13 +151,6 @@ async def export_network_csv(output_path: str = "data/network.csv") -> str:
                 "message": "No contacts found in your LinkedIn network."
             })
 
-        # Resolve the output path (handles WORKING_DIR and absolute paths)
-        absolute_file_path = resolve_output_path(output_path)
-        
-        # Ensure the directory exists
-        file_dir = os.path.dirname(absolute_file_path)
-        os.makedirs(file_dir, exist_ok=True)
-
         # Convert asyncpg results to pandas DataFrame
         # This ensures exact column matching and proper data handling
         df = pd.DataFrame([dict(row) for row in results])
@@ -162,125 +171,71 @@ async def export_network_csv(output_path: str = "data/network.csv") -> str:
                 if mask.any():
                     df.loc[mask, col] = df.loc[mask, col].apply(lambda x: json.dumps(x, ensure_ascii=False) if pd.notna(x) else '')
         
-        # Write CSV using pandas - ensures accurate column matching and row count
-        df.to_csv(
-            absolute_file_path,
-            index=False,  # Don't include row index
-            encoding='utf-8',
-            na_rep='',  # Replace NaN with empty string
-            quoting=csv.QUOTE_MINIMAL  # Only quote when necessary
-        )
+        # Get counts from DataFrame (before converting to CSV)
+        row_count = len(df)
+        actual_column_count = len(df.columns)
         
-        # Verify the file was written correctly by reading it back
-        # This ensures accurate row/column counts
-        df_verify = pd.read_csv(absolute_file_path)
-        actual_row_count = len(df_verify)
-        actual_column_count = len(df_verify.columns)
+        # Convert to CSV string (for client-side saving)
+        csv_content = df.to_csv(index=False, encoding='utf-8', na_rep='', quoting=csv.QUOTE_MINIMAL)
         
-        size_kb = round(os.path.getsize(absolute_file_path) / 1024, 2)
-        row_count = actual_row_count  # Use verified count from CSV file
+        # Calculate size from CSV content
+        size_kb = round(len(csv_content.encode('utf-8')) / 1024, 2)
+        
+        # Resolve the output path (handles WORKING_DIR and absolute paths)
+        # For Railway mode, we'll use relative path; for local mode, resolve to absolute
+        if os.getenv("PORT"):  # Railway mode - use relative path
+            absolute_file_path = output_path  # Keep relative for Cursor to resolve
+        else:  # Local mode - resolve to absolute path
+            absolute_file_path = resolve_output_path(output_path)
 
         # Build smart response
-        if os.getenv("PORT"):  # Running on Railway
-            # Check if WORKING_DIR is provided in headers (SSE mode - client wants local file)
-            working_dir_from_header = None
-            try:
-                # Try to get WORKING_DIR from context if available
-                working_dir_from_header = os.getenv("WORKING_DIR")
-            except:
-                pass
+        if os.getenv("PORT"):  # Running on Railway - return CSV data for client to save
+            # In SSE mode, Cursor will save relative to its current working directory
+            # Return relative path that Cursor can resolve
+            download_path = output_path  # e.g., "data/network.csv"
             
-            # If WORKING_DIR is set, try to download CSV to local machine
-            if working_dir_from_header:
-                try:
-                    import requests
-                    download_url = f"{APP_URL}/export/network.csv"
-                    download_path = resolve_output_path(output_path)
-                    download_dir = os.path.dirname(download_path)
-                    os.makedirs(download_dir, exist_ok=True)
-                    
-                    # Download CSV from Railway to local machine
-                    resp = requests.get(download_url, headers={"X-API-Key": user_id}, timeout=30)
-                    if resp.status_code == 200:
-                        with open(download_path, 'wb') as f:
-                            f.write(resp.content)
-                        
-                        message = (
-                            f"✅ Export completed and downloaded to your local machine!\n\n"
-                            f"📁 File saved to: {download_path}\n"
-                            f"📂 Working directory: {working_dir_from_header}\n"
-                            f"📈 Total Contacts: {row_count}\n"
-                            f"📊 Columns: {actual_column_count}\n"
-                            f"💾 File Size: {size_kb} KB\n\n"
-                            f"The CSV was downloaded from Railway and saved locally."
-                        )
-                        
-                        return json.dumps({
-                            "status": "success",
-                            "message": message,
-                            "path": download_path,
-                            "row_count": row_count,
-                            "column_count": actual_column_count,
-                            "size_kb": size_kb,
-                            "working_dir": working_dir_from_header
-                        })
-                except Exception as download_error:
-                    # If download fails, fall through to manual download instructions
-                    pass
-            
-            # Manual download instructions (fallback)
-            curl_example = shell_cmd(
-                f"curl -H 'X-API-Key: {user_id}' "
-                f"-o linkedin_network.csv {APP_URL}/export/network.csv"
-            )
-            python_example = py_cmd(
-                f"import requests\n\n"
-                f"resp = requests.get('{APP_URL}/export/network.csv', headers={{'X-API-Key': '{user_id}'}})\n"
-                f"open('linkedin_network.csv', 'wb').write(resp.content)\n"
-                f"print('✅ Downloaded linkedin_network.csv')"
-            )
-
             message = (
-                f"✅ Export completed.\n\n"
+                f"✅ Export completed on Railway.\n\n"
                 f"📈 Total Contacts: {row_count}\n"
                 f"📊 Columns: {actual_column_count}\n"
-                f"💾 Estimated Size: {size_kb} KB\n\n"
-                f"Use one of the commands below to download your CSV:\n\n"
-                f"**Command line (curl):**\n{curl_example}\n\n"
-                f"**Python script:**\n{python_example}\n\n"
-                f"🔗 Live download: {APP_URL}/export/network.csv"
+                f"💾 File Size: {size_kb} KB\n\n"
+                f"📁 CSV data returned - will be saved to: {download_path}\n"
+                f"📂 Relative to Cursor's current working directory.\n\n"
+                f"The CSV content is included in this response for Cursor to save locally."
             )
             
-            # Return metadata only (for Railway, we don't have local file path)
             return json.dumps({
                 "status": "success",
                 "message": message,
+                "csv_data": csv_content,  # CSV content for Cursor to save locally
+                "download_path": download_path,  # Relative path like "data/network.csv"
                 "row_count": row_count,
                 "column_count": actual_column_count,
-                "size_kb": size_kb
+                "size_kb": size_kb,
+                "save_locally": True  # Flag to indicate Cursor should save locally
             })
 
-        else:  # Local mode
-            working_dir = os.getenv("WORKING_DIR")
-            if working_dir:
-                message = (
-                    f"✅ Export completed locally.\n\n"
-                    f"📁 File saved to: {absolute_file_path}\n"
-                    f"📂 Working directory: {working_dir}\n"
-                    f"📈 Total Contacts: {row_count}\n"
-                    f"📊 Columns: {actual_column_count}\n"
-                    f"💾 File Size: {size_kb} KB\n\n"
-                    f"The CSV data was written directly to the filesystem (not sent through MCP)."
-                )
-            else:
-                message = (
-                    f"✅ Export completed locally.\n\n"
-                    f"📁 File saved to: {absolute_file_path}\n"
-                    f"📈 Total Contacts: {row_count}\n"
-                    f"📊 Columns: {actual_column_count}\n"
-                    f"💾 File Size: {size_kb} KB\n\n"
-                    f"💡 Tip: Set WORKING_DIR in your .mcp.json to control where files are saved."
-                )
+        else:  # Local mode - write CSV directly to filesystem
+            # Get the actual working directory (auto-detected or from env)
+            actual_working_dir = get_output_directory()
+            
+            # Ensure the directory exists
+            file_dir = os.path.dirname(absolute_file_path)
+            os.makedirs(file_dir, exist_ok=True)
+            
+            # Write CSV directly to local filesystem
+            with open(absolute_file_path, 'w', encoding='utf-8', newline='') as f:
+                f.write(csv_content)
+            
+            message = (
+                f"✅ Export completed locally.\n\n"
+                f"📁 File saved to: {absolute_file_path}\n"
+                f"📂 Working directory: {actual_working_dir}\n"
+                f"📈 Total Contacts: {row_count}\n"
+                f"📊 Columns: {actual_column_count}\n"
+                f"💾 File Size: {size_kb} KB\n\n"
+                f"The CSV data was written directly to the filesystem (not sent through MCP)."
+            )
 
             # Return metadata only - CSV data is already written to disk
             return json.dumps({
@@ -290,7 +245,7 @@ async def export_network_csv(output_path: str = "data/network.csv") -> str:
                 "row_count": row_count,
                 "column_count": actual_column_count,
                 "size_kb": size_kb,
-                "working_dir": working_dir if working_dir else os.getcwd()
+                "working_dir": actual_working_dir
             })
     except Exception as e:
         error_msg = str(e)
@@ -322,9 +277,20 @@ if __name__ == "__main__":
                     api_key = headers.get("x-api-key") or headers.get("authorization")
                     if api_key and api_key.lower().startswith("bearer "):
                         api_key = api_key.split(" ",1)[1].strip()
-                    token = current_api_key.set(api_key)
-                    try: await self.app(scope, receive, send)
-                    finally: current_api_key.reset(token)
+                    
+                    # Extract WORKING_DIR from headers (for SSE mode)
+                    working_dir = headers.get("working-dir") or headers.get("working_dir")
+                    
+                    # Set context variables
+                    api_token = current_api_key.set(api_key)
+                    working_dir_token = current_working_dir.set(working_dir) if working_dir else None
+                    
+                    try: 
+                        await self.app(scope, receive, send)
+                    finally: 
+                        current_api_key.reset(api_token)
+                        if working_dir_token:
+                            current_working_dir.reset(working_dir_token)
                 else: await self.app(scope, receive, send)
 
         fastapi_root = FastAPI()
