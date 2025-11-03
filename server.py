@@ -111,21 +111,17 @@ async def export_network_csv(output_path: str = "data/network.csv") -> str:
     """
     Export LinkedIn network to a CSV file.
     
-    When running on Railway (SSE mode): CSV data is returned in the response for Cursor to save locally.
-    Cursor will automatically create the data/ folder if it doesn't exist and save relative to its current working directory.
-    
-    When running locally: CSV is written directly to the filesystem. The data/ folder is created automatically if needed.
+    The CSV data is returned in the response for Cursor to save locally.
+    The server NEVER writes files to disk - all file operations happen client-side.
     
     Args:
-        output_path: Relative or absolute path where CSV will be saved. 
+        output_path: Relative path where CSV should be saved (for reference only).
                      Defaults to "data/network.csv".
-                     In Railway mode: Path is relative to Cursor's current working directory.
-                     In local mode: Path is resolved relative to the detected working directory.
+                     Cursor will save relative to its current working directory.
     
     Returns:
         JSON string with CSV data and metadata:
-        - Railway mode: {"status": "success", "csv_data": "...", "download_path": "data/network.csv", "save_locally": true, ...}
-        - Local mode: {"status": "success", "path": "/absolute/path/to/file.csv", ...}
+        {"status": "success", "csv_data": "...", "download_path": "data/network.csv", "save_locally": true, ...}
     """
     try:
         user_id = await get_user_id()
@@ -181,72 +177,30 @@ async def export_network_csv(output_path: str = "data/network.csv") -> str:
         # Calculate size from CSV content
         size_kb = round(len(csv_content.encode('utf-8')) / 1024, 2)
         
-        # Resolve the output path (handles WORKING_DIR and absolute paths)
-        # For Railway mode, we'll use relative path; for local mode, resolve to absolute
-        if os.getenv("PORT"):  # Railway mode - use relative path
-            absolute_file_path = output_path  # Keep relative for Cursor to resolve
-        else:  # Local mode - resolve to absolute path
-            absolute_file_path = resolve_output_path(output_path)
-
-        # Build smart response
-        if os.getenv("PORT"):  # Running on Railway - return CSV data for client to save
-            # In SSE mode, Cursor will save relative to its current working directory
-            # Return relative path that Cursor can resolve
-            download_path = output_path  # e.g., "data/network.csv"
-            
-            message = (
-                f"✅ Export completed on Railway.\n\n"
-                f"📈 Total Contacts: {row_count}\n"
-                f"📊 Columns: {actual_column_count}\n"
-                f"💾 File Size: {size_kb} KB\n\n"
-                f"📁 CSV data returned - will be saved to: {download_path}\n"
-                f"📂 Relative to Cursor's current working directory.\n\n"
-                f"The CSV content is included in this response for Cursor to save locally."
-            )
-            
-            return json.dumps({
-                "status": "success",
-                "message": message,
-                "csv_data": csv_content,  # CSV content for Cursor to save locally
-                "download_path": download_path,  # Relative path like "data/network.csv"
-                "row_count": row_count,
-                "column_count": actual_column_count,
-                "size_kb": size_kb,
-                "save_locally": True  # Flag to indicate Cursor should save locally
-            })
-
-        else:  # Local mode - write CSV directly to filesystem
-            # Get the actual working directory (auto-detected or from env)
-            actual_working_dir = get_output_directory()
-            
-            # Ensure the directory exists
-            file_dir = os.path.dirname(absolute_file_path)
-            os.makedirs(file_dir, exist_ok=True)
-            
-            # Write CSV directly to local filesystem
-            with open(absolute_file_path, 'w', encoding='utf-8', newline='') as f:
-                f.write(csv_content)
-            
-            message = (
-                f"✅ Export completed locally.\n\n"
-                f"📁 File saved to: {absolute_file_path}\n"
-                f"📂 Working directory: {actual_working_dir}\n"
-                f"📈 Total Contacts: {row_count}\n"
-                f"📊 Columns: {actual_column_count}\n"
-                f"💾 File Size: {size_kb} KB\n\n"
-                f"The CSV data was written directly to the filesystem (not sent through MCP)."
-            )
-
-            # Return metadata only - CSV data is already written to disk
-            return json.dumps({
-                "status": "success",
-                "message": message,
-                "path": absolute_file_path,  # Always return absolute path
-                "row_count": row_count,
-                "column_count": actual_column_count,
-                "size_kb": size_kb,
-                "working_dir": actual_working_dir
-            })
+        # Always return CSV data in response - never write to disk
+        # Cursor will handle saving the file locally
+        download_path = output_path  # e.g., "data/network.csv"
+        
+        message = (
+            f"✅ Export completed.\n\n"
+            f"📈 Total Contacts: {row_count}\n"
+            f"📊 Columns: {actual_column_count}\n"
+            f"💾 File Size: {size_kb} KB\n\n"
+            f"📁 CSV data returned - will be saved to: {download_path}\n"
+            f"📂 Relative to Cursor's current working directory.\n\n"
+            f"The CSV content is included in this response for Cursor to save locally."
+        )
+        
+        return json.dumps({
+            "status": "success",
+            "message": message,
+            "csv_data": csv_content,  # CSV content for Cursor to save locally
+            "download_path": download_path,  # Relative path like "data/network.csv"
+            "row_count": row_count,
+            "column_count": actual_column_count,
+            "size_kb": size_kb,
+            "save_locally": True  # Flag to indicate Cursor should save locally
+        })
     except Exception as e:
         error_msg = str(e)
         return json.dumps({
