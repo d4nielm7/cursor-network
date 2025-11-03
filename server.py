@@ -77,7 +77,13 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
         writer.writerow(columns)
         for contact in contacts:
             writer.writerow([contact.get(col, "") for col in columns])
-    return f"CSV with {len(contacts)} contacts written to {os.path.abspath(filepath)}"
+
+    # Your public Railway URL here:
+    server_url = "https://web-production-e31ba.up.railway.app"
+    return (
+        f"CSV with {len(contacts)} contacts exported. "
+        f"Download here: {server_url}/file-csv"
+    )
 
 # ---------- FastAPI for CSV Download ----------
 
@@ -88,7 +94,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             current_api_key.set(api_key)
         response = await call_next(request)
         return response
-
+    
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or "8000")
     if os.getenv("PORT"):
