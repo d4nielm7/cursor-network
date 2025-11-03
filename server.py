@@ -137,7 +137,7 @@ async def export_network_csv() -> str:
         column_count = len(contacts[0].keys()) if contacts else 0
 
         # Write CSV file
-        csv_path = resolve_output_path("data/network.csv")
+        csv_path = "network.csv"
         try:
             write_contacts_to_csv(contacts, csv_path)
             csv_message = f"\nCSV created at: {csv_path}"
