@@ -10,11 +10,11 @@ setup(
         "uvicorn",
         "asyncpg",
         "python-dotenv",
-        # other dependencies
+        # add other dependencies here
     ],
     entry_points={
         "console_scripts": [
-            "linkedin-network-mcp=your_module:main",  # your entry point function ref
+            "linkedin-network-mcp=linkedin_network_mcp.main:main",
         ]
     }
 )
