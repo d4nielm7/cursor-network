@@ -11,7 +11,9 @@ from fastapi.responses import FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 
+# Load environment variables from .env if present
 load_dotenv(override=False)
+
 mcp = FastMCP("LinkedIn Network")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -19,6 +21,7 @@ API_KEY = os.getenv("API_KEY")
 current_api_key: ContextVar[str | None] = ContextVar("current_api_key", default=None)
 
 db_pool = None
+
 async def get_db():
     global db_pool
     if db_pool is None:
@@ -34,21 +37,18 @@ async def get_user_id():
 
 @mcp.tool()
 async def export_network_csv_to_file(filepath: str = None) -> str:
-    """
-    Export LinkedIn network to CSV file in configurable directory.
-    """
     working_dir = os.getenv("WORKING_DIR", ".")
     if not filepath:
         filepath = os.path.join(working_dir, "network.csv")
     elif not os.path.isabs(filepath):
         filepath = os.path.join(working_dir, filepath)
-    
+
     user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
         results = await conn.fetch(
             """
-            SELECT 
+            SELECT
                 full_name, email, linkedin_url, headline, about,
                 current_company, current_company_linkedin_url,
                 current_company_website_url, experiences, skills, education, keywords
@@ -58,8 +58,9 @@ async def export_network_csv_to_file(filepath: str = None) -> str:
             """,
             user_id
         )
+
     if not results:
-        return f"No contacts found. Nothing written."
+        return "No contacts found. Nothing written."
 
     contacts = []
     for row in results:
@@ -90,6 +91,7 @@ async def export_network_csv_to_file(filepath: str = None) -> str:
         f"Download here: {server_url}/file-csv"
     )
 
+
 class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         api_key = request.headers.get("X-API-Key")
@@ -97,13 +99,13 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             current_api_key.set(api_key)
         response = await call_next(request)
         return response
-    
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or "8000")
     if os.getenv("PORT"):
         fastapi_root = FastAPI()
         fastapi_root.add_middleware(APIKeyMiddleware)
-        
+
         sse_app = create_sse_app(
             mcp,
             message_path="/messages/",
