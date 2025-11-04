@@ -33,10 +33,17 @@ async def get_user_id():
     return user_id
 
 @mcp.tool()
-async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
+async def export_network_csv_to_file(filepath: str = None) -> str:
     """
-    Export LinkedIn network to CSV file on the server filesystem.
+    Export LinkedIn network to CSV file in configurable directory.
     """
+    # Use WORKING_DIR for file path resolution
+    working_dir = os.getenv("WORKING_DIR", ".")
+    if not filepath:
+        filepath = os.path.join(working_dir, "network.csv")
+    elif not os.path.isabs(filepath):
+        filepath = os.path.join(working_dir, filepath)
+    
     user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
@@ -71,6 +78,7 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
                 contact[key] = str(value).replace('\n', ' ').replace('\r', ' ')
         contacts.append(contact)
 
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     columns = list(contacts[0].keys())
     with open(filepath, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter=',', quoting=csv.QUOTE_ALL, lineterminator='\n')
@@ -78,10 +86,10 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
         for contact in contacts:
             writer.writerow([contact.get(col, "") for col in columns])
 
-    # Your public Railway URL here:
+    # Your public Railway URL here (or localhost if running local)
     server_url = "https://web-production-e31ba.up.railway.app"
     return (
-        f"CSV with {len(contacts)} contacts exported. "
+        f"CSV exported to {filepath} with {len(contacts)} contacts. "
         f"Download here: {server_url}/file-csv"
     )
 
@@ -113,8 +121,8 @@ if __name__ == "__main__":
 
         @fastapi_root.get("/file-csv")
         async def file_csv():
-            """Download the already-generated CSV file from server."""
-            file_path = "network.csv"
+            working_dir = os.getenv("WORKING_DIR", ".")
+            file_path = os.path.join(working_dir, "network.csv")
             if not os.path.isfile(file_path):
                 return {"status": "error", "message": f"File '{file_path}' not found."}
             return FileResponse(
