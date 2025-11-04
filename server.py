@@ -3,11 +3,12 @@ import csv
 import json
 import asyncpg
 import subprocess
+import hashlib
 from fastmcp import FastMCP
 from fastmcp.server.http import create_sse_app
 from dotenv import load_dotenv
 from contextvars import ContextVar
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import FileResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 import uvicorn
@@ -34,9 +35,20 @@ async def get_user_id():
         raise Exception("API_KEY missing. Provide via 'X-API-Key' header or env.")
     return user_id
 
+def get_user_file_path(user_id: str) -> str:
+    """Generate a unique filename for a user based on their user_id"""
+    # Create a hash of the user_id for a unique but consistent filename
+    hash_obj = hashlib.sha256(user_id.encode())
+    user_hash = hash_obj.hexdigest()[:16]
+    return f"network_{user_hash}.csv"
+
 @mcp.tool()
 async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
     user_id = await get_user_id()
+    # Use unique filename based on user_id if default path is used
+    if filepath == "network.csv":
+        filepath = get_user_file_path(user_id)
+    
     pool = await get_db()
     async with pool.acquire() as conn:
         results = await conn.fetch(
@@ -86,7 +98,7 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
         try:
             subprocess.run([
                 "curl", "-o", curl_output, curl_url,
-                "-H", f"X-API-Key: {API_KEY}"
+                "-H", f"X-API-Key: {user_id}"
             ], check=True)
             return f"CSV exported to {filepath}. Curl download successful: {curl_output}"
         except Exception as e:
@@ -95,7 +107,7 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
     server_url = "https://web-production-e31ba.up.railway.app"
     return (
         f"CSV with {len(contacts)} contacts exported. "
-        f"Download here: {server_url}/file-csv"
+        f"Download here: {server_url}/file-csv (requires X-API-Key header)"
     )
 
 
@@ -128,10 +140,20 @@ def main():
             return {"status": "ok", "service": "LinkedIn Network MCP (smart)"}
 
         @fastapi_root.get("/file-csv")
-        async def file_csv():
-            file_path = "network.csv"
+        async def file_csv(x_api_key: str = Header(None, alias="X-API-Key")):
+            # Require API key for authentication
+            if not x_api_key:
+                raise HTTPException(status_code=401, detail="X-API-Key header required")
+            
+            # Get user_id from API key (API key is the user_id)
+            user_id = x_api_key
+            
+            # Generate unique file path for this user
+            file_path = get_user_file_path(user_id)
+            
             if not os.path.isfile(file_path):
-                return {"status": "error", "message": f"File '{file_path}' not found."}
+                return {"status": "error", "message": f"File for user not found. Please export your network first."}
+            
             return FileResponse(
                 path=file_path,
                 media_type='text/csv',
