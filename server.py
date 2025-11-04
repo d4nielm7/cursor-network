@@ -4,6 +4,8 @@ import json
 import asyncpg
 import subprocess
 import hashlib
+import hmac
+import base64
 from fastmcp import FastMCP
 from fastmcp.server.http import create_sse_app
 from dotenv import load_dotenv
@@ -19,7 +21,13 @@ mcp = FastMCP("LinkedIn Network")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("API_KEY")
+# Secret key for generating unique download tokens (should be set in production)
+DOWNLOAD_SECRET = os.getenv("DOWNLOAD_SECRET", "default-secret-change-in-production")
 current_api_key: ContextVar[str | None] = ContextVar("current_api_key", default=None)
+
+# In-memory store for token -> user_id mapping
+# In production, consider using Redis or database for persistence
+token_store: dict[str, str] = {}
 
 db_pool = None
 async def get_db():
@@ -41,6 +49,48 @@ def get_user_file_path(user_id: str) -> str:
     hash_obj = hashlib.sha256(user_id.encode())
     user_hash = hash_obj.hexdigest()[:16]
     return f"network_{user_hash}.csv"
+
+def generate_download_token(user_id: str) -> str:
+    """Generate a unique, secure download token for a user"""
+    # Create a deterministic token using HMAC of user_id
+    # This ensures same user always gets same token (consistent)
+    token = _compute_token(user_id)
+    
+    # Store mapping for quick lookup
+    token_store[token] = user_id
+    
+    return token
+
+def _compute_token(user_id: str) -> str:
+    """Compute token without side effects (for verification)"""
+    token_bytes = hmac.new(
+        DOWNLOAD_SECRET.encode(),
+        user_id.encode(),
+        hashlib.sha256
+    ).digest()
+    return base64.urlsafe_b64encode(token_bytes).decode().rstrip('=')[:32]
+
+async def get_user_id_from_token(token: str) -> str | None:
+    """Verify token and return user_id if valid, None otherwise"""
+    # First check in-memory store
+    if token in token_store:
+        return token_store[token]
+    
+    # If not in store, verify token by checking database
+    # We'll try to verify by checking if token matches any user_id
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        # Get all user_ids from database and verify token
+        user_ids = await conn.fetch("SELECT DISTINCT user_id FROM people")
+        for row in user_ids:
+            user_id = row['user_id']
+            expected_token = _compute_token(user_id)
+            if expected_token == token:
+                # Cache it for future lookups
+                token_store[token] = user_id
+                return user_id
+    
+    return None
 
 @mcp.tool()
 async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
@@ -104,10 +154,15 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
         except Exception as e:
             return f"CSV exported to {filepath}. Curl download failed: {e}"
 
+    # Generate unique download token for this user
+    download_token = generate_download_token(user_id)
+    
     server_url = "https://web-production-e31ba.up.railway.app"
+    unique_download_url = f"{server_url}/download/{download_token}"
+    
     return (
         f"CSV with {len(contacts)} contacts exported. "
-        f"Download here: {server_url}/file-csv (requires X-API-Key header)"
+        f"Download here: {unique_download_url}"
     )
 
 
@@ -141,6 +196,7 @@ def main():
 
         @fastapi_root.get("/file-csv")
         async def file_csv(x_api_key: str = Header(None, alias="X-API-Key")):
+            """Legacy endpoint - still supports header-based auth"""
             # Require API key for authentication
             if not x_api_key:
                 raise HTTPException(status_code=401, detail="X-API-Key header required")
@@ -153,6 +209,34 @@ def main():
             
             if not os.path.isfile(file_path):
                 return {"status": "error", "message": f"File for user not found. Please export your network first."}
+            
+            return FileResponse(
+                path=file_path,
+                media_type='text/csv',
+                filename='network.csv',
+                headers={"Content-Disposition": "attachment; filename=network.csv"}
+            )
+        
+        @fastapi_root.get("/download/{token}")
+        async def download_csv(token: str):
+            """New endpoint with unique token-based authentication - no headers needed!"""
+            # Get user_id from token
+            user_id = await get_user_id_from_token(token)
+            
+            if not user_id:
+                raise HTTPException(
+                    status_code=404, 
+                    detail="Invalid download token. Please export your network again to get a new link."
+                )
+            
+            # Generate unique file path for this user
+            file_path = get_user_file_path(user_id)
+            
+            if not os.path.isfile(file_path):
+                raise HTTPException(
+                    status_code=404,
+                    detail="File not found. Please export your network first."
+                )
             
             return FileResponse(
                 path=file_path,
