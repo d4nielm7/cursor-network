@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from contextvars import ContextVar
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 import uvicorn
 import sys
 
@@ -99,19 +99,23 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
     )
 
 
-class APIKeyMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        api_key = request.headers.get("X-API-Key")
-        if api_key:
-            current_api_key.set(api_key)
-        response = await call_next(request)
-        return response
+class APIKeyMiddleware:
+    """Custom middleware that doesn't interfere with streaming responses."""
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            request = Request(scope, receive)
+            api_key = request.headers.get("X-API-Key")
+            if api_key:
+                current_api_key.set(api_key)
+        await self.app(scope, receive, send)
 
 def main():
     port = int(os.getenv("PORT") or "8000")
     if os.getenv("PORT"):
         fastapi_root = FastAPI()
-        fastapi_root.add_middleware(APIKeyMiddleware)
 
         sse_app = create_sse_app(
             mcp,
@@ -135,8 +139,12 @@ def main():
                 headers={"Content-Disposition": "attachment; filename=network.csv"}
             )
 
+        # Mount SSE app - routes defined above take precedence
         fastapi_root.mount("/", sse_app)
-        uvicorn.run(fastapi_root, host="0.0.0.0", port=port)
+        
+        # Wrap the entire app with custom middleware
+        app_with_middleware = APIKeyMiddleware(fastapi_root)
+        uvicorn.run(app_with_middleware, host="0.0.0.0", port=port)
     else:
         print("🔧 Starting MCP server in STDIO mode (local)")
         mcp.run()
