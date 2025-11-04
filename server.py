@@ -35,7 +35,7 @@ async def get_user_id():
 @mcp.tool()
 async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
     """
-    Export LinkedIn network to CSV file. The file is automatically saved on the server and downloaded locally.
+    Export LinkedIn network to CSV file on the server filesystem.
     """
     user_id = await get_user_id()
     pool = await get_db()
@@ -78,10 +78,11 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
         for contact in contacts:
             writer.writerow([contact.get(col, "") for col in columns])
 
+    # Your public Railway URL here:
     server_url = "https://web-production-e31ba.up.railway.app"
     return (
         f"CSV with {len(contacts)} contacts exported. "
-        f"Download URL: {server_url}/file-csv"
+        f"Download here: {server_url}/file-csv"
     )
 
 # ---------- FastAPI for CSV Download ----------
