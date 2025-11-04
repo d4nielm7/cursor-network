@@ -37,7 +37,6 @@ async def export_network_csv_to_file(filepath: str = None) -> str:
     """
     Export LinkedIn network to CSV file in configurable directory.
     """
-    # Use WORKING_DIR for file path resolution
     working_dir = os.getenv("WORKING_DIR", ".")
     if not filepath:
         filepath = os.path.join(working_dir, "network.csv")
@@ -59,7 +58,6 @@ async def export_network_csv_to_file(filepath: str = None) -> str:
             """,
             user_id
         )
-
     if not results:
         return f"No contacts found. Nothing written."
 
@@ -86,14 +84,11 @@ async def export_network_csv_to_file(filepath: str = None) -> str:
         for contact in contacts:
             writer.writerow([contact.get(col, "") for col in columns])
 
-    # Your public Railway URL here (or localhost if running local)
     server_url = "https://web-production-e31ba.up.railway.app"
     return (
         f"CSV exported to {filepath} with {len(contacts)} contacts. "
         f"Download here: {server_url}/file-csv"
     )
-
-# ---------- FastAPI for CSV Download ----------
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
