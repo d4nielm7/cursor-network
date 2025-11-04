@@ -11,9 +11,7 @@ from fastapi.responses import FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 
-# Load environment variables from .env if present
 load_dotenv(override=False)
-
 mcp = FastMCP("LinkedIn Network")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -21,7 +19,6 @@ API_KEY = os.getenv("API_KEY")
 current_api_key: ContextVar[str | None] = ContextVar("current_api_key", default=None)
 
 db_pool = None
-
 async def get_db():
     global db_pool
     if db_pool is None:
@@ -36,19 +33,16 @@ async def get_user_id():
     return user_id
 
 @mcp.tool()
-async def export_network_csv_to_file(filepath: str = None) -> str:
-    working_dir = os.getenv("WORKING_DIR", ".")
-    if not filepath:
-        filepath = os.path.join(working_dir, "network.csv")
-    elif not os.path.isabs(filepath):
-        filepath = os.path.join(working_dir, filepath)
-
+async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
+    """
+    Export LinkedIn network to CSV file on the server filesystem.
+    """
     user_id = await get_user_id()
     pool = await get_db()
     async with pool.acquire() as conn:
         results = await conn.fetch(
             """
-            SELECT
+            SELECT 
                 full_name, email, linkedin_url, headline, about,
                 current_company, current_company_linkedin_url,
                 current_company_website_url, experiences, skills, education, keywords
@@ -60,7 +54,7 @@ async def export_network_csv_to_file(filepath: str = None) -> str:
         )
 
     if not results:
-        return "No contacts found. Nothing written."
+        return f"No contacts found. Nothing written."
 
     contacts = []
     for row in results:
@@ -77,7 +71,6 @@ async def export_network_csv_to_file(filepath: str = None) -> str:
                 contact[key] = str(value).replace('\n', ' ').replace('\r', ' ')
         contacts.append(contact)
 
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     columns = list(contacts[0].keys())
     with open(filepath, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter=',', quoting=csv.QUOTE_ALL, lineterminator='\n')
@@ -85,12 +78,14 @@ async def export_network_csv_to_file(filepath: str = None) -> str:
         for contact in contacts:
             writer.writerow([contact.get(col, "") for col in columns])
 
+    # Your public Railway URL here:
     server_url = "https://web-production-e31ba.up.railway.app"
     return (
-        f"CSV exported to {filepath} with {len(contacts)} contacts. "
+        f"CSV with {len(contacts)} contacts exported. "
         f"Download here: {server_url}/file-csv"
     )
 
+# ---------- FastAPI for CSV Download ----------
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -99,13 +94,13 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             current_api_key.set(api_key)
         response = await call_next(request)
         return response
-
+    
 if __name__ == "__main__":
     port = int(os.getenv("PORT") or "8000")
     if os.getenv("PORT"):
         fastapi_root = FastAPI()
         fastapi_root.add_middleware(APIKeyMiddleware)
-
+        
         sse_app = create_sse_app(
             mcp,
             message_path="/messages/",
@@ -118,8 +113,8 @@ if __name__ == "__main__":
 
         @fastapi_root.get("/file-csv")
         async def file_csv():
-            working_dir = os.getenv("WORKING_DIR", ".")
-            file_path = os.path.join(working_dir, "network.csv")
+            """Download the already-generated CSV file from server."""
+            file_path = "network.csv"
             if not os.path.isfile(file_path):
                 return {"status": "error", "message": f"File '{file_path}' not found."}
             return FileResponse(
