@@ -16,11 +16,10 @@ ENV/
 !README.md
 railway.json
 Procfile
-test_*.py
-backup.py
-MCP_*.md
 RAILWAY_*.md
 mcp.json.example
 .git/
 .gitignore
+test_*.py
+backup.py
 
