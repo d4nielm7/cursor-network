@@ -1,10 +1,19 @@
 providers = ["python"]
 
 [phases.setup]
-nixPkgs = ["python311Full"]
+# Include Python and pip-related tooling in the Nix environment so pip is available
+nixPkgs = [
+  "python311Full",
+  "python311Packages.pip",
+  "python311Packages.setuptools",
+  "python311Packages.wheel"
+]
 
 [phases.install]
-cmds = ["python -m pip install -r requirements.txt"]
+cmds = [
+  "python -m pip install --upgrade pip setuptools wheel",
+  "python -m pip install -r requirements.txt"
+]
 
 [start]
 cmd = "python server.py"
