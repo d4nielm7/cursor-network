@@ -1,6 +1,6 @@
 {
   "name": "@ghostteam/network-mcp-node",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "LinkedIn Network MCP Server - Export your LinkedIn network data to CSV",
   "bin": {
     "network-mcp-node": "./bin/cli.js"
@@ -28,7 +28,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ghostteam/network-mcp-node.git"
+    "url": "https://github.com/d4nielm7/cursor-network.git"
   }
 }
 
