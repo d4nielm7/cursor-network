@@ -4,12 +4,8 @@ providers = ["python"]
 nixPkgs = ["python311Full"]
 
 [phases.install]
-cmds = [
-  "python3 -m venv /app/venv",
-  "source /app/venv/bin/activate",
-  "pip install -r requirements.txt"
-]
+cmds = ["python -m pip install -r requirements.txt"]
 
 [start]
-cmd = "source /app/venv/bin/activate && python3 server.py"
+cmd = "python server.py"
 
