@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "network-mcp-node": {
+      "command": "npx",
+      "args": ["-y", "@ghostteam/network-mcp-node@latest"],
+      "env": {
+        "API_KEY": "039d08d0-962f-45a6-a2a0-fe028c376827",
+        "OUT_DIR": "C:\\Users\\User\\Documents"
+      }
+    }
+  }
+}

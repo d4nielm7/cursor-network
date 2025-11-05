@@ -19,10 +19,15 @@ import sys
 load_dotenv(override=False)
 mcp = FastMCP("LinkedIn Network")
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Default cloud database URL (can be overridden via DATABASE_URL env var)
+DEFAULT_DATABASE_URL = "postgresql://neondb_owner:npg_fJD7CWt6VnTQ@ep-twilight-sun-aho2mfyf-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+DATABASE_URL = os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL
 API_KEY = os.getenv("API_KEY")
 # Secret key for generating unique download tokens (should be set in production)
 DOWNLOAD_SECRET = os.getenv("DOWNLOAD_SECRET", "default-secret-change-in-production")
+# Directory where CSV files should be saved (defaults to current directory)
+# Supports both OUT_DIR and SAVE_DIRECTORY (OUT_DIR takes precedence)
+SAVE_DIRECTORY = os.getenv("OUT_DIR") or os.getenv("SAVE_DIRECTORY") or os.getcwd()
 current_api_key: ContextVar[str | None] = ContextVar("current_api_key", default=None)
 
 # In-memory store for token -> user_id mapping
@@ -94,10 +99,33 @@ async def get_user_id_from_token(token: str) -> str | None:
 
 @mcp.tool()
 async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
+    """
+    Export LinkedIn network data to a CSV file in the configured directory.
+    
+    Args:
+        filepath: Optional filepath. Defaults to 'network.csv' in configured directory.
+    
+    Returns:
+        Success message with file path and contact count.
+    """
     user_id = await get_user_id()
-    # Use unique filename based on user_id if default path is used
+    
+    # Use configured save directory or current working directory
+    save_dir = SAVE_DIRECTORY
+    if not os.path.isabs(save_dir):
+        # If relative path, make it relative to current directory
+        save_dir = os.path.join(os.getcwd(), save_dir)
+    
+    # Ensure save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # If default filename is used, save to configured directory
     if filepath == "network.csv":
-        filepath = get_user_file_path(user_id)
+        filepath = os.path.join(save_dir, "network.csv")
+    else:
+        # If relative path, make it relative to save directory
+        if not os.path.isabs(filepath):
+            filepath = os.path.join(save_dir, filepath)
     
     pool = await get_db()
     async with pool.acquire() as conn:
@@ -139,30 +167,10 @@ async def export_network_csv_to_file(filepath: str = "network.csv") -> str:
         writer.writerow(columns)
         for contact in contacts:
             writer.writerow([contact.get(col, "") for col in columns])
-
-    # If running locally and want to auto-download via curl or other shell
-    # Check environment variable or argument to decide if auto-run curl
-    if os.getenv("RUN_CURL") == "yes":
-        curl_url = "http://localhost:8000/file-csv"
-        curl_output = os.path.join(os.path.dirname(filepath), "downloaded_network.csv")
-        try:
-            subprocess.run([
-                "curl", "-o", curl_output, curl_url,
-                "-H", f"X-API-Key: {user_id}"
-            ], check=True)
-            return f"CSV exported to {filepath}. Curl download successful: {curl_output}"
-        except Exception as e:
-            return f"CSV exported to {filepath}. Curl download failed: {e}"
-
-    # Generate unique download token for this user
-    download_token = generate_download_token(user_id)
-    
-    server_url = "https://web-production-e31ba.up.railway.app"
-    unique_download_url = f"{server_url}/download/{download_token}"
     
     return (
-        f"CSV with {len(contacts)} contacts exported. "
-        f"Download here: {unique_download_url}"
+        f"CSV file exported successfully to {filepath}. "
+        f"Total contacts: {len(contacts)}"
     )
 
 

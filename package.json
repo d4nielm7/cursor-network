@@ -1,0 +1,30 @@
+{
+  "name": "@ghostteam/network-mcp-node",
+  "version": "1.0.0",
+  "description": "LinkedIn Network MCP Server - Export your LinkedIn network data to CSV",
+  "bin": {
+    "network-mcp-node": "./bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js"
+  },
+  "keywords": [
+    "linkedin",
+    "mcp",
+    "network",
+    "export"
+  ],
+  "author": "GhostTeam",
+  "license": "MIT",
+  "files": [
+    "bin/",
+    "server.py",
+    "requirements.txt",
+    "README.md"
+  ],
+  "dependencies": {},
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
+
