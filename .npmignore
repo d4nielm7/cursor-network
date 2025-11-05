@@ -1,0 +1,57 @@
+# Development files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test_output/
+*.csv
+
+# Railway config (not needed in npm package)
+railway.json
+Dockerfile
+RAILWAY_DEPLOYMENT.md
+PRE_DEPLOYMENT_CHECKLIST.md
+
+# Environment
+.env
+.env.local
+
+# Documentation (optional - uncomment if you don't want docs in package)
+# README.md
+

@@ -2,10 +2,10 @@
   "mcpServers": {
     "network-mcp-node": {
       "command": "npx",
-      "args": ["-y", "@ghostteam/network-mcp-node@^1.0.0"],
+      "args": ["-y", "@ghostteam/network-mcp-node@latest"],
       "env": {
-        "UUID": "039d08d0-962f-45a6-a2a0-fe028c376827",
-        "OUT_DIR": "C:\\Users\\User\\Documents"
+        "UUID": "your-uuid-here",
+        "OUT_DIR": "C:\\Users\\YourName\\Documents"
       }
     }
   }

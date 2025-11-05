@@ -25,10 +25,7 @@ It only communicates with your backend server via HTTP API.
 
 ## Quick Start
 
-1. **Install Python dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+1. **Make sure Python 3.8+ is installed** (dependencies will be installed automatically)
 
 2. **Configure `~/.cursor/mcp.json`:**
    ```json
@@ -36,7 +33,7 @@ It only communicates with your backend server via HTTP API.
      "mcpServers": {
        "network-mcp-node": {
          "command": "npx",
-         "args": ["-y", "@ghostteam/network-mcp-node@^1.0.0"],
+         "args": ["-y", "@ghostteam/network-mcp-node@latest"],
          "env": {
            "UUID": "your-uuid-here",
            "OUT_DIR": "C:\\Users\\User\\Documents"
@@ -52,7 +49,7 @@ It only communicates with your backend server via HTTP API.
 
 ## How It Works
 
-1. **MCP Client** (Cursor) runs `npx @ghostteam/network-mcp-node@^1.0.0`
+1. **MCP Client** (Cursor) runs `npx @ghostteam/network-mcp-node@latest`
 2. **Local MCP Server** starts (Python)
 3. **User calls export tool** → Server sends HTTP GET to backend:
    ```

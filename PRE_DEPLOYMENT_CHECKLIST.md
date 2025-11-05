@@ -61,7 +61,7 @@ After publishing, users can use:
   "mcpServers": {
     "network-mcp-node": {
       "command": "npx",
-      "args": ["-y", "@ghostteam/network-mcp-node@^1.0.0"],
+      "args": ["-y", "@ghostteam/network-mcp-node@latest"],
       "env": {
         "UUID": "their-uuid",
         "OUT_DIR": "C:\\Users\\User\\Documents"
