@@ -10,6 +10,6 @@ COPY api_server.py .
 COPY server.py .
 
 # Run the API server for Railway deployment
-# Railway sets PORT env var automatically, uvicorn will read it
-CMD uvicorn api_server:app --host 0.0.0.0 --port ${PORT:-8000}
+# Railway sets PORT env var automatically, use shell form to expand it
+CMD ["sh", "-c", "uvicorn api_server:app --host 0.0.0.0 --port ${PORT:-8000}"]
 

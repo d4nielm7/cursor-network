@@ -1,110 +1,26 @@
 #!/usr/bin/env node
 
-const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
 const scriptDir = __dirname;
 const packageRoot = path.resolve(scriptDir, '..');
-const serverPath = path.join(packageRoot, 'server.py');
-const requirementsPath = path.join(packageRoot, 'requirements.txt');
+const serverPath = path.join(packageRoot, 'server.js');
 
 if (!fs.existsSync(serverPath)) {
-  console.error(`Error: server.py not found at ${serverPath}`);
+  console.error(`Error: server.js not found at ${serverPath}`);
   process.exit(1);
 }
 
-function checkPython() {
-  return new Promise((resolve, reject) => {
-    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const check = spawn(pythonCmd, ['--version']);
-    
-    check.on('close', (code) => {
-      if (code === 0) {
-        resolve(pythonCmd);
-      } else {
-        reject(new Error('Python not found. Please install Python 3.8+'));
-      }
-    });
-    
-    check.on('error', () => {
-      reject(new Error('Python not found. Please install Python 3.8+'));
-    });
-  });
+// Check Node.js version (need 18+ for built-in fetch)
+const nodeVersion = process.version;
+const majorVersion = parseInt(nodeVersion.slice(1).split('.')[0], 10);
+
+if (majorVersion < 18) {
+  console.error(`Error: Node.js 18+ required. Current version: ${nodeVersion}`);
+  console.error('Please upgrade Node.js or install node-fetch: npm install node-fetch@2');
+  process.exit(1);
 }
 
-function installRequirements(pythonCmd) {
-  return new Promise((resolve, reject) => {
-    if (!fs.existsSync(requirementsPath)) {
-      resolve(); // No requirements file, skip
-      return;
-    }
-    
-    console.error('Installing Python dependencies...');
-    const pip = spawn(pythonCmd, ['-m', 'pip', 'install', '-q', '-r', requirementsPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: packageRoot
-    });
-    
-    let stderr = '';
-    pip.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-    
-    pip.on('close', (code) => {
-      if (code === 0) {
-        console.error('Dependencies installed successfully.');
-        resolve();
-      } else {
-        console.error('Warning: Failed to install dependencies:', stderr);
-        console.error('You may need to run: pip install -r requirements.txt');
-        resolve(); // Continue anyway
-      }
-    });
-    
-    pip.on('error', () => {
-      console.error('Warning: Could not install dependencies automatically.');
-      resolve(); // Continue anyway
-    });
-  });
-}
-
-async function main() {
-  try {
-    const pythonCmd = await checkPython();
-    
-    // Try to install requirements if needed
-    await installRequirements(pythonCmd);
-    
-    const pythonProcess = spawn(pythonCmd, [serverPath], {
-      stdio: 'inherit',
-      cwd: process.cwd(),
-      env: {
-        ...process.env  // Includes UUID, OUT_DIR from mcp.json
-      }
-    });
-    
-    pythonProcess.on('error', (error) => {
-      console.error('Error starting Python server:', error.message);
-      process.exit(1);
-    });
-    
-    pythonProcess.on('exit', (code) => {
-      process.exit(code || 0);
-    });
-    
-    process.on('SIGINT', () => {
-      pythonProcess.kill('SIGINT');
-    });
-    
-    process.on('SIGTERM', () => {
-      pythonProcess.kill('SIGTERM');
-    });
-    
-  } catch (error) {
-    console.error(error.message);
-    process.exit(1);
-  }
-}
-
-main();
+// Run the JavaScript server directly
+require(serverPath);

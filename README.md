@@ -7,7 +7,7 @@ Local npm MCP server that fetches LinkedIn network data from your backend server
 ```
 Cursor (MCP Client)
     ↓ npx
-Local MCP Server (server.py)
+Local MCP Server (server.js)
     ↓ HTTP GET /api/network (with X-UUID header)
 Backend Server (Railway)
     ↓ Queries database
@@ -25,7 +25,7 @@ It only communicates with your backend server via HTTP API.
 
 ## Quick Start
 
-1. **Make sure Python 3.8+ is installed** (dependencies will be installed automatically)
+1. **Make sure Node.js 18+ is installed** (dependencies will be installed automatically)
 
 2. **Configure `~/.cursor/mcp.json`:**
    ```json
@@ -45,12 +45,12 @@ It only communicates with your backend server via HTTP API.
 
 3. **Restart Cursor**
 
-4. **Use the `export_network_csv_to_file` MCP tool**
+4. **Use the `download_csv` MCP tool**
 
 ## How It Works
 
 1. **MCP Client** (Cursor) runs `npx @ghostteam/network-mcp-node@latest`
-2. **Local MCP Server** starts (Python)
+2. **Local MCP Server** starts (Node.js/JavaScript)
 3. **User calls export tool** → Server sends HTTP GET to backend:
    ```
    GET /api/network
