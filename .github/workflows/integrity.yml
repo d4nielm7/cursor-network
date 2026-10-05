@@ -1,0 +1,16 @@
+name: integrity
+# Refuses hidden code, folder-open tasks, fake fonts and the other shapes the October 2026 attacks used.
+# Reads only; the token below cannot write and no secrets are passed.
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: node scripts/guard-integrity.mjs
